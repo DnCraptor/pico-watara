@@ -772,7 +772,11 @@ typedef struct __attribute__((__packed__)) {
 
 uint16_t frequencies[] = { 252, 362, 366, 378, 396, 404, 408, 412, 416, 420, 424, 432 };
 #ifdef PICO_RP2040
-uint8_t frequency_index = 3;
+    #ifdef CPU_FREQ
+    uint8_t frequency_index = 0;
+    #else
+    uint8_t frequency_index = 3;
+    #endif
 #else
 uint8_t frequency_index = 0;
 #endif
