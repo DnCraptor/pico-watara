@@ -548,8 +548,12 @@ bool filebrowser_loadfile(const char pathname[256]) {
     draw_window("Loading ROM", window_x, window_y, 43, 5);
 
     FILINFO fileinfo;
-    f_stat(pathname, &fileinfo);
-    rom_size = fileinfo.fsize;
+    if (FR_OK != f_stat(pathname, &fileinfo) || fileinfo.fsize == 0) {
+        draw_text("ERROR: ROM not found or empty!", window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(5000);
+        return false;
+    }
+    const uint32_t load_size = fileinfo.fsize;
     if (16384 - 64 << 10 < fileinfo.fsize) {
         draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
         sleep_ms(5000);
@@ -561,6 +565,9 @@ bool filebrowser_loadfile(const char pathname[256]) {
     sleep_ms(500);
 
 
+    uint32_t total_read = 0;
+    bool load_ok = false;
+
     if (watara_psram_available() && watara_psram_size() != 0) {
         if (fileinfo.fsize > watara_psram_size()) {
             draw_text("ERROR: ROM too large for PSRAM!", window_x + 1, window_y + 2, 13, 1);
@@ -570,25 +577,29 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
         if (FR_OK == f_open(&file, pathname, FA_READ)) {
             uint8_t *dst = (uint8_t *)WATARA_PSRAM_BASE;
+            FRESULT read_result;
             do {
-                f_read(&file, dst, 4096, &bytes_read);
+                read_result = f_read(&file, dst, 4096, &bytes_read);
                 dst += bytes_read;
+                total_read += bytes_read;
             }
-            while (bytes_read != 0);
+            while (read_result == FR_OK && bytes_read != 0);
+            load_ok = read_result == FR_OK && total_read == load_size;
+            f_close(&file);
         }
-        f_close(&file);
     } else {
-        multicore_lockout_start_blocking();
-        auto flash_target_offset = FLASH_TARGET_OFFSET;
-
         if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            multicore_lockout_start_blocking();
+            auto flash_target_offset = FLASH_TARGET_OFFSET;
             static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
+            FRESULT read_result;
 
             do {
                 memset(buffer, 0xff, sizeof(buffer));
-                f_read(&file, buffer, sizeof(buffer), &bytes_read);
+                read_result = f_read(&file, buffer, sizeof(buffer), &bytes_read);
+                total_read += bytes_read;
 
-                if (bytes_read) {
+                if (read_result == FR_OK && bytes_read) {
                     const uint8_t *flash_data =
                         (const uint8_t *)(XIP_BASE + flash_target_offset);
                     if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
@@ -602,14 +613,22 @@ bool filebrowser_loadfile(const char pathname[256]) {
                     flash_target_offset += FLASH_SECTOR_SIZE;
                 }
             }
-            while (bytes_read != 0);
+            while (read_result == FR_OK && bytes_read != 0);
 
             gpio_put(PICO_DEFAULT_LED_PIN, true);
+            multicore_lockout_end_blocking();
+            load_ok = read_result == FR_OK && total_read == load_size;
+            f_close(&file);
         }
-        f_close(&file);
-        multicore_lockout_end_blocking();
     }
 
+    if (!load_ok) {
+        draw_text("ERROR: ROM load failed!", window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(5000);
+        return false;
+    }
+
+    rom_size = load_size;
     strcpy(filename, fileinfo.fname);
 
     return true;
@@ -657,7 +676,7 @@ static bool demo_load_next_rom(const char *after_name) {
     return true;
 }
 
-void filebrowser(const char pathname[256], const char executables[11]) {
+bool filebrowser(const char pathname[256], const char executables[11]) {
     bool debounce = true;
     bool demo_debounce = false;
     char basepath[256];
@@ -752,12 +771,12 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 demo_debounce = true;
             if (demo_debounce && gamepad1.bits.b) {
                 demo_requested = true;
-                return;
+                return false;
             }
 
             // ESCAPE
             if (gamepad1.bits.select) {
-                return;
+                return false;
             }
 
             if (gamepad1.bits.down) {
@@ -818,8 +837,9 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 if (file_at_cursor.is_executable) {
                     sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
 
-                    filebrowser_loadfile(tmp);
-                    return;
+                    if (filebrowser_loadfile(tmp))
+                        return true;
+                    debounce = false;
                 }
             }
 
@@ -1188,8 +1208,19 @@ const MenuItem menu_items[] = {
 };
 #define MENU_ITEMS_NUMBER (sizeof(menu_items) / sizeof (MenuItem))
 
+static inline void clear_video_frame() {
+    if (settings.aspect_ratio == 1) {
+        uint8_t *screen = (uint8_t *)SCREEN;
+        for (int y = 0; y < SV_H; ++y)
+            memset(screen + (y + 20) * 240 + 40, 0, SV_W);
+    } else {
+        memset(SCREEN, 0, SV_W * SV_H);
+    }
+}
+
 void menu() {
     bool exit = false;
+    clear_video_frame();
     graphics_set_mode(TEXTMODE_DEFAULT);
     memset(TEXT_BUFFER, 0, sizeof(TEXT_BUFFER));
     char footer[TEXTMODE_COLS];
@@ -1350,6 +1381,8 @@ void menu() {
         sleep_ms(125);
     }
 
+    clear_video_frame();
+
 #if VGA || HDMI
     watara_gray_lines = settings.gray_lines;
     watara_gray_level = settings.gray_level;
@@ -1481,12 +1514,13 @@ int __time_critical_func(main)() {
     update_palette();
 
     bool need_browser = true;
+    bool rom_loaded = false;
     while (true) {
         if (need_browser) {
             i2s_pause(&i2s_config);
             graphics_set_mode(TEXTMODE_DEFAULT);
             demo_requested = false;
-            filebrowser(HOME_DIR, "sv,bin");
+            const bool rom_selected = filebrowser(HOME_DIR, "sv,bin");
 
             if (demo_requested) {
                 demo_requested = false;
@@ -1496,15 +1530,19 @@ int __time_critical_func(main)() {
                     demo_active = false;
                     continue;
                 }
+                rom_loaded = true;
             } else {
                 demo_active = false;
+                if (rom_selected)
+                    rom_loaded = true;
             }
             need_browser = false;
         }
 
-        if (supervision_load((uint8_t *)rom, rom_size) ) {
-            update_palette();
-        }
+        if (rom_loaded) {
+            if (supervision_load((uint8_t *)rom, rom_size) ) {
+                update_palette();
+            }
 
 #if SOFTTV
         tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
@@ -1539,10 +1577,11 @@ int __time_critical_func(main)() {
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 
-        start_time = time_us_64();
+            start_time = time_us_64();
+        }
 
         while (true) {
-            if (fxPressedV) {
+            if (rom_loaded && fxPressedV) {
                 if (altPressed) {
                     settings.save_slot = fxPressedV;
                     load();
@@ -1551,13 +1590,15 @@ int __time_critical_func(main)() {
                     save();
                 }
             }
-            if (settings.aspect_ratio == 1) {
-                uint32_t sw_w = 240;
-                supervision_exec_ex((uint8_t *) SCREEN + sw_w * 20 + 40, sw_w, 0, settings.ghosting);
-            } else {
-                supervision_exec_ex((uint8_t *) SCREEN, SV_W, 0, settings.ghosting);
+            if (rom_loaded) {
+                if (settings.aspect_ratio == 1) {
+                    uint32_t sw_w = 240;
+                    supervision_exec_ex((uint8_t *) SCREEN + sw_w * 20 + 40, sw_w, 0, settings.ghosting);
+                } else {
+                    supervision_exec_ex((uint8_t *) SCREEN, SV_W, 0, settings.ghosting);
+                }
+                demo_draw_title_overlay();
             }
-            demo_draw_title_overlay();
             // for(int x = 0; x <64; x++) graphics_set_palette(x, RGB888(bitmap.pal.color[x][0], bitmap.pal.color[x][1], bitmap.pal.color[x][2]));
 
             if (gamepad1.bits.start && gamepad1.bits.select) {
@@ -1569,61 +1610,79 @@ int __time_critical_func(main)() {
                         tight_loop_contents();
                     }
                 }
-                if (settings.aspect_ratio == 1) {
+                if (rom_loaded && settings.aspect_ratio == 1) {
                     uint8_t* screen = (uint8_t*)SCREEN;
                     for (int i = 0; i < sizeof(bezel); ++i) {
                         screen[i] = bezel[i] + base_bezel;
                     }
                 }
-                if (demo_requested)
+                if (demo_requested) {
+                    clear_video_frame();
                     break;
+                }
+                if (!rom_loaded) {
+                    need_browser = true;
+                    break;
+                }
             }
 
-            if (demo_active) {
+            if (rom_loaded && demo_active) {
                 const uint8_t duration_index = demo_duration < count_of(demo_seconds)
                                              ? demo_duration : 0;
                 const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
                 if (time_us_64() - demo_game_started_at >= duration_us) {
                     demo_advance_pending = true;
+                    clear_video_frame();
                     break;
                 }
             }
 
-            frame++;
-            if (limit_fps) {
+            if (rom_loaded) {
+                frame++;
+                if (limit_fps) {
 
-                frame_cnt++;
-                if (frame_cnt == 6) {
-                    while (time_us_64() - frame_timer_start < 16666 * 6);  // 60 Hz
-                    frame_timer_start = time_us_64();
-                    frame_cnt = 0;
+                    frame_cnt++;
+                    if (frame_cnt == 6) {
+                        while (time_us_64() - frame_timer_start < 16666 * 6);  // 60 Hz
+                        frame_timer_start = time_us_64();
+                        frame_cnt = 0;
+                    }
                 }
-            }
-            tight_loop_contents();
-            sound_stream_update(buffer, AUDIO_BUFFER_SIZE);
-            // process audio
-            auto * ptr = (unsigned short *)audio_buffer;
-            for (unsigned char i : buffer)
-                *ptr++ = i << (8 + 1);
+                tight_loop_contents();
+                sound_stream_update(buffer, AUDIO_BUFFER_SIZE);
+                // process audio
+                auto * ptr = (unsigned short *)audio_buffer;
+                for (unsigned char i : buffer)
+                    *ptr++ = i << (8 + 1);
 
-            i2s_dma_write(&i2s_config, (const int16_t *) audio_buffer);
+                i2s_dma_write(&i2s_config, (const int16_t *) audio_buffer);
+            } else {
+                tight_loop_contents();
+            }
         }
 
         i2s_pause(&i2s_config);
-        supervision_reset();
-        update_palette();
+        if (rom_loaded) {
+            supervision_reset();
+            update_palette();
+            rom_loaded = false;
+        }
 
         if (demo_requested) {
             demo_requested = false;
             demo_active = true;
             demo_current_name[0] = '\0';
-            if (demo_load_next_rom(nullptr))
+            if (demo_load_next_rom(nullptr)) {
+                rom_loaded = true;
                 continue;
+            }
             demo_active = false;
         } else if (demo_active && demo_advance_pending) {
             demo_advance_pending = false;
-            if (demo_load_next_rom(demo_current_name))
+            if (demo_load_next_rom(demo_current_name)) {
+                rom_loaded = true;
                 continue;
+            }
             demo_active = false;
         }
 
