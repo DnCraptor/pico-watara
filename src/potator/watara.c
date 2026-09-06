@@ -130,10 +130,10 @@ void __time_critical_func(supervision_exec_ex)(uint8 *backbuffer, uint32 backbuf
                 }
                 #pragma GCC unroll 4
                 while (x < size) {
-                    p_out[x++] = (b & 0b11) << 5; b >>= 2;
-                    p_out[x++] = (b & 0b11) << 5; b >>= 2;
-                    p_out[x++] = (b & 0b11) << 5; b >>= 2;
-                    p_out[x++] = (b & 0b11) << 5; b = *vram_line++;
+                    p_out[x++] = ((b & 0b11) << 5) | 0b11111; b >>= 2;
+                    p_out[x++] = ((b & 0b11) << 5) | 0b11111; b >>= 2;
+                    p_out[x++] = ((b & 0b11) << 5) | 0b11111; b >>= 2;
+                    p_out[x++] = ((b & 0b11) << 5) | 0b11111; b = *vram_line++;
                 }
                 p_out += backbufferWidth;
                 scanline += 0x30;

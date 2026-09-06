@@ -65,7 +65,8 @@ static const uint8_t init_seq[] = {
 #endif
     5, 0, 0x2a, 0x00, 0x00, SCREEN_WIDTH >> 8, SCREEN_WIDTH & 0xff, // CASET: column addresses
     5, 0, 0x2b, 0x00, 0x00, SCREEN_HEIGHT >> 8, SCREEN_HEIGHT & 0xff, // RASET: row addresses
-    1, 2, 0x20, // Inversion OFF
+//    1, 2, 0x20, // Inversion OFF
+    1, 2, 0x21, // Inversion ON
     1, 2, 0x13, // Normal display on, then 10 ms delay
     1, 2, 0x29, // Main screen turn on, then wait 500 ms
     0 // Terminate list
