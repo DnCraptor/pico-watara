@@ -96,6 +96,14 @@ static G_BUFFER graphics_buffer = {
     .width = 320
 };
 
+#define OVERLAY_BAR_Y 228
+#define OVERLAY_TEXT_Y 230
+#define OVERLAY_TEXT_MAX 52
+static char overlay_text[2][OVERLAY_TEXT_MAX + 1];
+static uint8_t overlay_text_len[2];
+static volatile uint8_t overlay_text_index = 0;
+static volatile bool overlay_enabled = false;
+
 
 //пины
 //пин синхросигнала(для совместимости с RGB по ч.б.) 0-7
@@ -1047,8 +1055,30 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                 }
                 else
                 */
-                if (input_buffer != NULL)
-                    switch (tv_out_mode.mode_bpp) {
+                if (input_buffer != NULL) {
+                    if (overlay_enabled && y >= OVERLAY_BAR_Y) {
+                        const int out_width = video_mode.img_W - d_end;
+                        const uint8_t overlay_index = overlay_text_index;
+                        const char *text = overlay_text[overlay_index];
+                        const int len = overlay_text_len[overlay_index];
+                        const int text_x = (320 - len * 6) / 2;
+                        output_buffer8 += buffer_shift;
+                        for (int i = 0; i < out_width; ++i) {
+                            const int sx = (i * 320) / out_width;
+                            uint8_t color = 129;
+                            if (y >= OVERLAY_TEXT_Y && y < OVERLAY_TEXT_Y + 8 &&
+                                sx >= text_x && sx < text_x + len * 6) {
+                                const int tx = sx - text_x;
+                                const int c = tx / 6;
+                                const int gx = tx % 6;
+                                const uint8_t bits = TV_FONT_6X8[(uint8_t)text[c] * 8 + (y - OVERLAY_TEXT_Y)];
+                                if (bits & (1u << gx)) color = 128;
+                            }
+                            uint32_t cout32 = conv_color[li][color];
+                            uint8_t *c_4 = (uint8_t *)&cout32;
+                            *output_buffer8++ = c_4[i & 3];
+                        }
+                    } else switch (tv_out_mode.mode_bpp) {
                         case TEXTMODE_DEFAULT: {
                             /*
                              * conv_color contains one four-sample chroma period for
@@ -1142,6 +1172,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                         }
                         break;
                     }
+                }
             }
         }
 
@@ -1155,6 +1186,21 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
         // dma_inx=(N_LINE_BUF_DMA-2+((dma_channel_hw_addr(dma_chan_ctrl)->read_addr-(uint32_t)rd_addr_DMA_CTRL)/4))%(N_LINE_BUF_DMA);
     }
     return true;
+}
+
+void graphics_set_overlay(const char *text, bool enabled) {
+    if (enabled && text) {
+        const uint8_t next = overlay_text_index ^ 1u;
+        strncpy(overlay_text[next], text, OVERLAY_TEXT_MAX);
+        overlay_text[next][OVERLAY_TEXT_MAX] = '\0';
+        uint8_t len = 0;
+        while (len < OVERLAY_TEXT_MAX && overlay_text[next][len]) ++len;
+        overlay_text_len[next] = len;
+        __asm volatile ("dmb" ::: "memory");
+        overlay_text_index = next;
+    }
+    __asm volatile ("dmb" ::: "memory");
+    overlay_enabled = enabled;
 }
 
 void graphics_set_buffer(uint8_t* buffer, const uint16_t width, const uint16_t height) {

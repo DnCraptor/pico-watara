@@ -63,11 +63,22 @@ static uint text_buffer_height = 0;
 
 static uint16_t txt_palette[16];
 
+#define OVERLAY_BAR_Y 228
+#define OVERLAY_TEXT_Y 230
+#define OVERLAY_TEXT_MAX 52
+static char overlay_text[2][OVERLAY_TEXT_MAX + 1];
+static uint8_t overlay_text_len[2];
+static volatile uint8_t overlay_text_index = 0;
+static volatile bool overlay_enabled = false;
+
 #ifdef PICO_RP2350
 static uint8_t vga_font_8x16_sram[sizeof(font_8x16)];
+static uint8_t vga_font_6x8_sram[sizeof(font_6x8)];
 #define VGA_FONT_8X16 vga_font_8x16_sram
+#define VGA_FONT_6X8 vga_font_6x8_sram
 #else
 #define VGA_FONT_8X16 font_8x16
+#define VGA_FONT_6X8 font_6x8
 #endif
 
 //буфер 2К текстовой палитры для быстрой работы
@@ -118,6 +129,32 @@ void __time_critical_func() dma_handler_VGA() {
     int y, line_number;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
+
+    const int overlay_y = screen_line / 2;
+    if (overlay_enabled && overlay_y >= OVERLAY_BAR_Y) {
+        if (screen_line & 1) return;
+        uint16_t *dst = (uint16_t *)(*output_buffer);
+        dst += shift_picture / 2;
+        const uint16_t bg = palette[0][129];
+        const uint16_t fg = palette[0][128];
+        for (int x = 0; x < visible_line_size; ++x) dst[x] = bg;
+        if (overlay_y >= OVERLAY_TEXT_Y && overlay_y < OVERLAY_TEXT_Y + 8) {
+            const uint8_t overlay_index = overlay_text_index;
+            const char *text = overlay_text[overlay_index];
+            const int len = overlay_text_len[overlay_index];
+            const int text_x = (visible_line_size - len * 6) / 2;
+            for (int c = 0; c < len; ++c) {
+                uint8_t bits = VGA_FONT_6X8[(uint8_t)text[c] * 8 + (overlay_y - OVERLAY_TEXT_Y)];
+                for (int x = 0; x < 6; ++x) {
+                    if (bits & 1) dst[text_x + c * 6 + x] = fg;
+                    bits >>= 1;
+                }
+            }
+        }
+        dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+        return;
+    }
+
     switch (graphics_mode) {
         case CGA_160x200x16:
         case CGA_320x200x4:
@@ -335,6 +372,21 @@ void __time_critical_func() dma_handler_VGA() {
     dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
 }
 
+void graphics_set_overlay(const char *text, bool enabled) {
+    if (enabled && text) {
+        const uint8_t next = overlay_text_index ^ 1u;
+        strncpy(overlay_text[next], text, OVERLAY_TEXT_MAX);
+        overlay_text[next][OVERLAY_TEXT_MAX] = '\0';
+        uint8_t len = 0;
+        while (len < OVERLAY_TEXT_MAX && overlay_text[next][len]) ++len;
+        overlay_text_len[next] = len;
+        __asm volatile ("dmb" ::: "memory");
+        overlay_text_index = next;
+    }
+    __asm volatile ("dmb" ::: "memory");
+    overlay_enabled = enabled;
+}
+
 void graphics_set_mode(enum graphics_mode_t mode) {
     switch (mode) {
         case TEXTMODE_53x30:
@@ -522,6 +574,7 @@ void graphics_set_palette(const uint8_t i, const uint32_t color888) {
 void graphics_init() {
 #ifdef PICO_RP2350
     memcpy(vga_font_8x16_sram, font_8x16, sizeof(vga_font_8x16_sram));
+    memcpy(vga_font_6x8_sram, font_6x8, sizeof(vga_font_6x8_sram));
 #endif
     //инициализация палитры по умолчанию
 #if 1

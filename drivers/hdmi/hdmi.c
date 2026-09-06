@@ -33,6 +33,14 @@ static int graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
 
+#define OVERLAY_BAR_Y 228
+#define OVERLAY_TEXT_Y 230
+#define OVERLAY_TEXT_MAX 52
+static char overlay_text[2][OVERLAY_TEXT_MAX + 1];
+static uint8_t overlay_text_len[2];
+static volatile uint8_t overlay_text_index = 0;
+static volatile bool overlay_enabled = false;
+
 //текстовый буфер
 uint8_t* text_buffer = NULL;
 
@@ -225,7 +233,23 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         uint8_t* input_buffer = &graphics_buffer[(line / 2) * graphics_buffer_width];
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
         int y = line / 2;
-        switch (graphics_mode) {
+
+        if (overlay_enabled && y >= OVERLAY_BAR_Y) {
+            const uint8_t overlay_index = overlay_text_index;
+            const char *text = overlay_text[overlay_index];
+            const int len = overlay_text_len[overlay_index];
+            HDMI_FILL(output_buffer, 129, SCREEN_WIDTH);
+            if (y >= OVERLAY_TEXT_Y && y < OVERLAY_TEXT_Y + 8) {
+                const int text_x = (SCREEN_WIDTH - len * 6) / 2;
+                for (int c = 0; c < len; ++c) {
+                    uint8_t bits = HDMI_FONT_6X8[(uint8_t)text[c] * 8 + (y - OVERLAY_TEXT_Y)];
+                    for (int x = 0; x < 6; ++x) {
+                        if (bits & 1) output_buffer[text_x + c * 6 + x] = 128;
+                        bits >>= 1;
+                    }
+                }
+            }
+        } else switch (graphics_mode) {
             case GRAPHICSMODE_DEFAULT:
             case VGA_320x240x256: {
                 //заполняем пространство сверху и снизу графического буфера
@@ -587,6 +611,21 @@ static inline bool hdmi_init() {
     return true;
 };
 //выбор видеорежима
+void graphics_set_overlay(const char *text, bool enabled) {
+    if (enabled && text) {
+        const uint8_t next = overlay_text_index ^ 1u;
+        strncpy(overlay_text[next], text, OVERLAY_TEXT_MAX);
+        overlay_text[next][OVERLAY_TEXT_MAX] = '\0';
+        uint8_t len = 0;
+        while (len < OVERLAY_TEXT_MAX && overlay_text[next][len]) ++len;
+        overlay_text_len[next] = len;
+        __asm volatile ("dmb" ::: "memory");
+        overlay_text_index = next;
+    }
+    __asm volatile ("dmb" ::: "memory");
+    overlay_enabled = enabled;
+}
+
 void graphics_set_mode(enum graphics_mode_t mode) {
     graphics_mode = mode;
     clrScr(0);

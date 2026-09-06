@@ -472,49 +472,33 @@ static bool demo_title_drawn = false;
 static const uint64_t demo_title_time_us = 10000000ull;
 
 static void demo_draw_title_overlay(void) {
-    const bool bezel_mode = settings.aspect_ratio == 1;
-    const int screen_w = bezel_mode ? 240 : SV_W;
-    const int screen_h = bezel_mode ? 200 : SV_H;
-    const int bar_y = screen_h - 12;
     const bool visible = demo_active && demo_current_name[0] &&
                          time_us_64() - demo_game_started_at < demo_title_time_us;
-    uint8_t *screen = (uint8_t *)SCREEN;
 
     if (!visible) {
-        if (demo_title_drawn && bezel_mode) {
-            for (int y = bar_y; y < screen_h; ++y) {
-                const uint8_t *src = &bezel[y * 240];
-                uint8_t *dst = &screen[y * 240];
-                for (int x = 0; x < 240; ++x)
-                    dst[x] = src[x] + base_bezel;
-            }
-        }
+        if (demo_title_drawn)
+#if VGA || HDMI || SOFTTV
+            graphics_set_overlay(nullptr, false);
+#endif
         demo_title_drawn = false;
         return;
     }
 
-    for (int y = bar_y; y < screen_h; ++y)
-        memset(&screen[y * screen_w], base_bezel + 1, screen_w);
-
-    const char *dot = strrchr(demo_current_name, '.');
-    size_t len = dot ? (size_t)(dot - demo_current_name) : strlen(demo_current_name);
-    const size_t max_chars = (screen_w - 4) / 6;
-    if (len > max_chars) len = max_chars;
-    const int text_x = (screen_w - (int)len * 6) / 2;
-
-    for (size_t c = 0; c < len; ++c) {
-        const uint8_t ch = (uint8_t)(demo_current_name[c] == '_' ? ' ' : demo_current_name[c]);
-        for (int gy = 0; gy < 8; ++gy) {
-            uint8_t bits = font_6x8[ch * 8 + gy];
-            uint8_t *dst = &screen[(bar_y + 2 + gy) * screen_w + text_x + (int)c * 6];
-            for (int gx = 0; gx < 6; ++gx) {
-                if (bits & 1) dst[gx] = base_bezel;
-                bits >>= 1;
-            }
-        }
+    if (!demo_title_drawn) {
+        char title[53];
+        const char *dot = strrchr(demo_current_name, '.');
+        size_t len = dot ? (size_t)(dot - demo_current_name) : strlen(demo_current_name);
+        if (len > sizeof(title) - 1) len = sizeof(title) - 1;
+        for (size_t i = 0; i < len; ++i)
+            title[i] = demo_current_name[i] == '_' ? ' ' : demo_current_name[i];
+        title[len] = '\0';
+#if VGA || HDMI || SOFTTV
+        graphics_set_overlay(title, true);
+#endif
+        demo_title_drawn = true;
     }
-    demo_title_drawn = true;
 }
+
 
 int compareFileItems(const void* a, const void* b) {
     const auto* itemA = (file_item_t *)a;
@@ -660,6 +644,10 @@ static bool demo_load_next_rom(const char *after_name) {
 
     strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
     demo_current_name[sizeof(demo_current_name) - 1] = '\0';
+    demo_title_drawn = false;
+#if VGA || HDMI || SOFTTV
+    graphics_set_overlay(nullptr, false);
+#endif
     demo_game_started_at = time_us_64();
     return true;
 }
