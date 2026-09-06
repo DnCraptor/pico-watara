@@ -22,6 +22,7 @@ extern "C" {
 #include "frame.h"
 #include <graphics.h>
 #include "audio.h"
+#include "psram.h"
 
 #include "nespad.h"
 #include "ff.h"
@@ -30,7 +31,7 @@ extern "C" {
 #define HOME_DIR "\\WATARA"
 extern char __flash_binary_end;
 #define FLASH_TARGET_OFFSET (((((uintptr_t)&__flash_binary_end - XIP_BASE) / FLASH_SECTOR_SIZE) + 4) * FLASH_SECTOR_SIZE)
-static const uintptr_t rom = XIP_BASE + FLASH_TARGET_OFFSET;
+static uintptr_t rom = XIP_BASE + FLASH_TARGET_OFFSET;
 
 #define AUDIO_SAMPLE_RATE SV_SAMPLE_RATE
 #define AUDIO_BUFFER_SIZE ((SV_SAMPLE_RATE / 60) << 1)
@@ -515,38 +516,54 @@ bool filebrowser_loadfile(const char pathname[256]) {
     sleep_ms(500);
 
 
-    multicore_lockout_start_blocking();
-    auto flash_target_offset = FLASH_TARGET_OFFSET;
-
-    if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
-
-        do {
-            memset(buffer, 0xff, sizeof(buffer));
-            f_read(&file, buffer, sizeof(buffer), &bytes_read);
-
-            if (bytes_read) {
-                const uint8_t *flash_data =
-                    (const uint8_t *)(XIP_BASE + flash_target_offset);
-                if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
-                    const uint32_t ints = save_and_disable_interrupts();
-                    flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-                    flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
-                    restore_interrupts(ints);
-                }
-
-                gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
-
-                flash_target_offset += FLASH_SECTOR_SIZE;
-            }
+    if (watara_psram_available() && watara_psram_size() != 0) {
+        if (fileinfo.fsize > watara_psram_size()) {
+            draw_text("ERROR: ROM too large for PSRAM!", window_x + 1, window_y + 2, 13, 1);
+            sleep_ms(5000);
+            return false;
         }
-        while (bytes_read != 0);
 
-        gpio_put(PICO_DEFAULT_LED_PIN, true);
+        if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            uint8_t *dst = (uint8_t *)WATARA_PSRAM_BASE;
+            do {
+                f_read(&file, dst, 4096, &bytes_read);
+                dst += bytes_read;
+            }
+            while (bytes_read != 0);
+        }
+        f_close(&file);
+    } else {
+        multicore_lockout_start_blocking();
+        auto flash_target_offset = FLASH_TARGET_OFFSET;
+
+        if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
+
+            do {
+                memset(buffer, 0xff, sizeof(buffer));
+                f_read(&file, buffer, sizeof(buffer), &bytes_read);
+
+                if (bytes_read) {
+                    const uint8_t *flash_data =
+                        (const uint8_t *)(XIP_BASE + flash_target_offset);
+                    if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
+                        const uint32_t ints = save_and_disable_interrupts();
+                        flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
+                        flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+                        restore_interrupts(ints);
+                    }
+
+                    gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
+                    flash_target_offset += FLASH_SECTOR_SIZE;
+                }
+            }
+            while (bytes_read != 0);
+
+            gpio_put(PICO_DEFAULT_LED_PIN, true);
+        }
+        f_close(&file);
+        multicore_lockout_end_blocking();
     }
-    f_close(&file);
-    multicore_lockout_end_blocking();
-    // restore_interrupts(ints);
 
     strcpy(filename, fileinfo.fname);
 
@@ -583,21 +600,22 @@ void filebrowser(const char pathname[256], const char executables[11]) {
         auto off = 0;
         draw_text("START", off, 29, 7, 0);
         off += 5;
-        draw_text(" Run at cursor ", off, 29, 0, 3);
-        off += 16;
+        draw_text(" Run ", off, 29, 0, 3);
+        off += 5;
         draw_text("SELECT", off, 29, 7, 0);
         off += 6;
-        draw_text(" Run previous  ", off, 29, 0, 3);
+        draw_text(" Previous ", off, 29, 0, 3);
 #ifndef TFT
-        off += 16;
-        draw_text("ARROWS", off, 29, 7, 0);
-        off += 6;
-        draw_text(" Navigation    ", off, 29, 0, 3);
-        off += 16;
+        off += 10;
         draw_text("A/F10", off, 29, 7, 0);
         off += 5;
         draw_text(" USB DRV ", off, 29, 0, 3);
+        off += 9;
 #endif
+        if (watara_psram_available() && watara_psram_size() != 0)
+            draw_text("PSRAM", off, 29, 7, 0);
+        else
+            draw_text("FLASH", off, 29, 7, 0);
 
         if (FR_OK != f_opendir(&dir, basepath)) {
             draw_text("Failed to open directory", 1, 1, 4, 0);
@@ -811,6 +829,9 @@ bool __not_in_flash_func(overclock)() {
 #endif
     bool res = set_sys_clock_khz(frequencies[frequency_index] * KHZ, 0);
     if (res) {
+#if PICO_RP2350
+        watara_psram_reclock();
+#endif
         adjust_clk();
     }
     return res;
@@ -1226,6 +1247,10 @@ static uint8_t buffer[AUDIO_BUFFER_SIZE] = { 0 };
 
 int __time_critical_func(main)() {
     overclock();
+#if PICO_RP2350
+    if (watara_psram_init() && watara_psram_size() != 0)
+        rom = WATARA_PSRAM_BASE;
+#endif
 
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(render_core);
