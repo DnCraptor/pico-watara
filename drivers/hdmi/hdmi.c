@@ -257,6 +257,20 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
 
                 break;
             }
+            case GRAPHICSMODE_3X3: {
+                /* Watara fullscreen 4:3: stretch the native 160x160
+                 * framebuffer to the complete logical 320x240 raster.
+                 * Horizontal scaling is exact 2x; vertical scaling uses
+                 * nearest-neighbour 160 -> 240. */
+                input_buffer = &graphics_buffer[((y * 2) / 3) * graphics_buffer_width];
+                for (int x = 0; x < 160; ++x) {
+                    uint8_t i_color = input_buffer[x];
+                    i_color = ((i_color & 0xf0) == 0xf0) ? 255 : i_color;
+                    output_buffer[x * 2] = i_color;
+                    output_buffer[x * 2 + 1] = i_color;
+                }
+                break;
+            }
             case TEXTMODE_DEFAULT:
             case TEXTMODE_53x30: {
                 *output_buffer++ = 255;

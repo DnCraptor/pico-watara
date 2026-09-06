@@ -472,11 +472,7 @@ static bool demo_title_drawn = false;
 static const uint64_t demo_title_time_us = 10000000ull;
 
 static void demo_draw_title_overlay(void) {
-#if VGA
-    const bool bezel_mode = settings.aspect_ratio;
-#else
-    const bool bezel_mode = true;
-#endif
+    const bool bezel_mode = settings.aspect_ratio == 1;
     const int screen_w = bezel_mode ? 240 : SV_W;
     const int screen_h = bezel_mode ? 200 : SV_H;
     const int bar_y = screen_h - 12;
@@ -1089,6 +1085,11 @@ void load_config() {
     rgb3 = settings.rgb3;
     if (settings.ghosting > 6) settings.ghosting = 4;
     if (settings.tv_system > 1) settings.tv_system = 0;
+#if HDMI
+    if (settings.aspect_ratio > 2) settings.aspect_ratio = 0;
+#else
+    if (settings.aspect_ratio > 1) settings.aspect_ratio = 0;
+#endif
 #if SOFTTV
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
 #endif
@@ -1156,8 +1157,10 @@ const MenuItem menu_items[] = {
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
         { "RGB3: %06Xh ", HEX, &rgb3, nullptr, 0xFFFFFF },
-#if VGA
-        { "Keep aspect ratio: %s",     ARRAY, &settings.aspect_ratio,  nullptr, 1, {"NO ",       "YES"}},
+#if HDMI
+        { "Display mode: %s", ARRAY, &settings.aspect_ratio, nullptr, 2, {"Native", "Bezel ", "4:3   "}},
+#else
+        { "Keep aspect ratio: %s", ARRAY, &settings.aspect_ratio, nullptr, 1, {"NO ", "YES"}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
@@ -1349,19 +1352,30 @@ void menu() {
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
-#if VGA
-    if (settings.aspect_ratio) {
-        graphics_set_offset(40, 20);
-        graphics_set_buffer((uint8_t *)SCREEN, 240, 200);
-        graphics_set_mode(GRAPHICSMODE_ASPECT);
-    } else {
+#if HDMI
+    if (settings.aspect_ratio == 2) {
         graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
         graphics_set_offset(0, 0);
+        graphics_set_mode(GRAPHICSMODE_3X3);
+    } else
+#endif
+    if (settings.aspect_ratio == 1) {
+        graphics_set_offset(40, 20);
+        graphics_set_buffer((uint8_t *)SCREEN, 240, 200);
+#if VGA
+        graphics_set_mode(GRAPHICSMODE_ASPECT);
+#else
+        graphics_set_mode(GRAPHICSMODE_DEFAULT);
+#endif
+    } else {
+        graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
+#if VGA
+        graphics_set_offset(0, 0);
+#else
+        graphics_set_offset(80, 40);
+#endif
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
     }
-#else
-    graphics_set_mode(GRAPHICSMODE_DEFAULT);
-#endif
     if (count_of(palettes) <= settings.palette) {
         settings.rgb0 = rgb0;
         settings.rgb1 = rgb1;
@@ -1489,29 +1503,34 @@ int __time_critical_func(main)() {
         tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
         tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
-#if VGA
-        if (settings.aspect_ratio) {
+#if HDMI
+        if (settings.aspect_ratio == 2) {
+            graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
+            graphics_set_offset(0, 0);
+            graphics_set_mode(GRAPHICSMODE_3X3);
+        } else
+#endif
+        if (settings.aspect_ratio == 1) {
             graphics_set_offset(40, 20);
             graphics_set_buffer((uint8_t *)SCREEN, 240, 200);
+#if VGA
             graphics_set_mode(GRAPHICSMODE_ASPECT);
+#else
+            graphics_set_mode(GRAPHICSMODE_DEFAULT);
+#endif
             uint8_t* screen = (uint8_t*)SCREEN;
             for (int i = 0; i < sizeof(bezel); ++i) {
                 screen[i] = bezel[i] + base_bezel;
             }
         } else {
             graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
+#if VGA
             graphics_set_offset(0, 0);
+#else
+            graphics_set_offset(80, 40);
+#endif
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
-#else
-        settings.aspect_ratio = false;
-        graphics_set_buffer((uint8_t *)SCREEN, 240, 200);
-        graphics_set_mode(GRAPHICSMODE_DEFAULT);
-        uint8_t* screen = (uint8_t*)SCREEN;
-        for (int i = 0; i < sizeof(bezel); ++i) {
-            screen[i] = bezel[i] + base_bezel;
-        }
-#endif
 
         start_time = time_us_64();
 
@@ -1525,17 +1544,12 @@ int __time_critical_func(main)() {
                     save();
                 }
             }
-#if VGA
-            if (settings.aspect_ratio) {
+            if (settings.aspect_ratio == 1) {
                 uint32_t sw_w = 240;
                 supervision_exec_ex((uint8_t *) SCREEN + sw_w * 20 + 40, sw_w, 0, settings.ghosting);
             } else {
                 supervision_exec_ex((uint8_t *) SCREEN, SV_W, 0, settings.ghosting);
             }
-#else
-                uint32_t sw_w = 240;
-                supervision_exec_ex((uint8_t *) SCREEN + sw_w * 20 + 40, sw_w, 0, settings.ghosting);
-#endif
             demo_draw_title_overlay();
             // for(int x = 0; x <64; x++) graphics_set_palette(x, RGB888(bitmap.pal.color[x][0], bitmap.pal.color[x][1], bitmap.pal.color[x][2]));
 
@@ -1547,7 +1561,7 @@ int __time_critical_func(main)() {
                         tight_loop_contents();
                     }
                 }
-                if (settings.aspect_ratio) {
+                if (settings.aspect_ratio == 1) {
                     uint8_t* screen = (uint8_t*)SCREEN;
                     for (int i = 0; i < sizeof(bezel); ++i) {
                         screen[i] = bezel[i] + base_bezel;

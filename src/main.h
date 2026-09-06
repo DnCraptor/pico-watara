@@ -27,7 +27,7 @@ typedef union {
 typedef struct __attribute__((__packed__)) {
     uint8_t version;
     bool swap_ab;
-    bool aspect_ratio;
+    uint8_t aspect_ratio;
     uint8_t ghosting;
     uint8_t palette;
     uint8_t save_slot;
