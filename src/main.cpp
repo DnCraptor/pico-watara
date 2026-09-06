@@ -59,13 +59,18 @@ SETTINGS settings = {
     .rgb2 = 0xCC0066,
     .rgb3 = 0x663300,
     .instant_ignition = false,
-    .tv_system = 0
+    .tv_system = 0,
+    .gray_lines = 0,
+    .gray_level = 1
 };
 
 uint32_t rgb0;
 uint32_t rgb1;
 uint32_t rgb2;
 uint32_t rgb3;
+
+volatile uint8_t watara_gray_lines = 0;
+volatile uint8_t watara_gray_level = 1;
 
 static kbd_t keyboard = {
     .bits = { false, false, false, false, false, false, false, false },
@@ -1035,7 +1040,9 @@ static bool config_read(const char* pathname) {
     f_close(&file);
 
     if (FR_OK != fr ||
-        (bytes_read != sizeof(loaded) && bytes_read != sizeof(loaded) - 1)) {
+        (bytes_read != sizeof(loaded) &&
+         bytes_read != sizeof(loaded) - 2 &&
+         bytes_read != sizeof(loaded) - 3)) {
         return false;
     }
 
@@ -1078,6 +1085,18 @@ void load_config() {
 #else
     if (settings.aspect_ratio > 1) settings.aspect_ratio = 0;
 #endif
+#if VGA
+    if (settings.gray_lines > 3) settings.gray_lines = 0;
+    if (settings.gray_level > 3) settings.gray_level = 1;
+#elif HDMI
+    settings.gray_lines = settings.gray_lines ? 1 : 0;
+    if (settings.gray_level > 3) settings.gray_level = 1;
+#else
+    settings.gray_lines = 0;
+    settings.gray_level = 1;
+#endif
+    watara_gray_lines = settings.gray_lines;
+    watara_gray_level = settings.gray_level;
 #if SOFTTV
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
 #endif
@@ -1149,6 +1168,13 @@ const MenuItem menu_items[] = {
         { "Display mode: %s", ARRAY, &settings.aspect_ratio, nullptr, 2, {"Native", "Bezel ", "4:3   "}},
 #else
         { "Keep aspect ratio: %s", ARRAY, &settings.aspect_ratio, nullptr, 1, {"NO ", "YES"}},
+#endif
+#if VGA
+        { "Gray lines: %s", ARRAY, &settings.gray_lines, nullptr, 3, {"No        ", "Vertical  ", "Horizontal", "Both      "} },
+        { "Gray level: %s", ARRAY, &settings.gray_level, nullptr, 3, {"0", "1", "2", "3"} },
+#elif HDMI
+        { "Gray lines: %s", ARRAY, &settings.gray_lines, nullptr, 1, {"OFF", "ON "} },
+        { "Gray level: %s", ARRAY, &settings.gray_level, nullptr, 3, {"0", "1", "2", "3"} },
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
@@ -1336,6 +1362,10 @@ void menu() {
         sleep_ms(125);
     }
 
+#if VGA || HDMI
+    watara_gray_lines = settings.gray_lines;
+    watara_gray_level = settings.gray_level;
+#endif
 #if SOFTTV
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;

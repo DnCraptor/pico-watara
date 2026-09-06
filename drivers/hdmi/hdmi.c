@@ -9,6 +9,11 @@
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
 
+extern volatile uint8_t watara_gray_lines;
+extern volatile uint8_t watara_gray_level;
+
+#define WATARA_GRAY_PALETTE_BASE 216
+
 //PIO параметры
 static uint offs_prg0 = 0;
 static uint offs_prg1 = 0;
@@ -27,7 +32,7 @@ static uint32_t palette[256];
 #define SCREEN_WIDTH (320)
 #define SCREEN_HEIGHT (240)
 //графический буфер
-static uint8_t* __scratch_y("hdmi_ptr_1") graphics_buffer = NULL;
+static uint8_t* __scratch_x("hdmi_ptr_1") graphics_buffer = NULL;
 static int graphics_buffer_width = 0;
 static int graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
@@ -44,41 +49,9 @@ static volatile bool overlay_enabled = false;
 //текстовый буфер
 uint8_t* text_buffer = NULL;
 
-#ifdef PICO_RP2350
-static uint8_t hdmi_font_6x8_sram[sizeof(font_6x8)];
-static uint8_t hdmi_textmode_palette_sram[sizeof(textmode_palette)];
-#define HDMI_FONT_6X8 hdmi_font_6x8_sram
-#define HDMI_TEXTMODE_PALETTE hdmi_textmode_palette_sram
-
-static inline __attribute__((always_inline)) void hdmi_fill_u8(void *dst_void, uint8_t value, size_t count) {
-    volatile uint8_t *dst8 = (volatile uint8_t *)dst_void;
-    while (count && ((uintptr_t)dst8 & 3u)) {
-        *dst8++ = value;
-        --count;
-    }
-    const uint32_t word = (uint32_t)value * 0x01010101u;
-    volatile uint32_t *dst32 = (volatile uint32_t *)dst8;
-    while (count >= 16) {
-        dst32[0] = word;
-        dst32[1] = word;
-        dst32[2] = word;
-        dst32[3] = word;
-        dst32 += 4;
-        count -= 16;
-    }
-    while (count >= 4) {
-        *dst32++ = word;
-        count -= 4;
-    }
-    dst8 = (volatile uint8_t *)dst32;
-    while (count--) *dst8++ = value;
-}
-#define HDMI_FILL(dst, value, count) hdmi_fill_u8((dst), (value), (count))
-#else
 #define HDMI_FONT_6X8 font_6x8
 #define HDMI_TEXTMODE_PALETTE textmode_palette
 #define HDMI_FILL(dst, value, count) memset((dst), (value), (count))
-#endif
 
 
 //DMA каналы
@@ -91,8 +64,8 @@ static int dma_chan_pal_conv;
 
 //DMA буферы
 //основные строчные данные
-static uint32_t* __scratch_y("hdmi_ptr_3") dma_lines[2] = {NULL,NULL};
-static uint32_t* __scratch_y("hdmi_ptr_4") DMA_BUF_ADDR[2];
+static uint32_t* __scratch_x("hdmi_ptr_3") dma_lines[2] = {NULL,NULL};
+static uint32_t* __scratch_x("hdmi_ptr_4") DMA_BUF_ADDR[2];
 
 //ДМА палитра для конвертации
 //в хвосте этой памяти выделяется dma_data
@@ -211,7 +184,7 @@ static void pio_set_x(PIO pio, const int sm, uint32_t v) {
 }
 
 
-static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
+static void __scratch_x("hdmi_driver") dma_handler_HDMI() {
     static uint32_t inx_buf_dma;
     static uint line = 0;
     irq_inx++;
@@ -266,18 +239,43 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                 //рисуем сам видеобуфер+пространство справа
                 input_buffer = &graphics_buffer[(y - graphics_buffer_shift_y) * graphics_buffer_width];
 
-                const uint8_t* input_buffer_end = input_buffer + graphics_buffer_width;
+                const uint8_t gray = WATARA_GRAY_PALETTE_BASE + (watara_gray_level & 3u);
+                const bool gray_row = watara_gray_lines &&
+                                      y >= 40 && y < 200 && ((y - 40) & 1);
 
-                if (graphics_buffer_shift_x < 0) input_buffer -= graphics_buffer_shift_x;
+                if (gray_row && graphics_buffer_width == 160 && graphics_buffer_shift_x == 80) {
+                    /* Native: the gray scanline replaces the complete LCD row. */
+                    HDMI_FILL(output_buffer, gray, 160);
+                    output_buffer += 160;
+                } else if (gray_row && graphics_buffer_width == 240 && graphics_buffer_shift_x == 40) {
+                    /* Bezel: preserve both 40-pixel bezel sides and replace only
+                     * the central 160-pixel Watara LCD row. */
+                    for (int x = 0; x < 40; ++x) {
+                        uint8_t i_color = input_buffer[x];
+                        *output_buffer++ = ((i_color & 0xf0) == 0xf0) ? 255 : i_color;
+                    }
+                    HDMI_FILL(output_buffer, gray, 160);
+                    output_buffer += 160;
+                    for (int x = 200; x < 240; ++x) {
+                        uint8_t i_color = input_buffer[x];
+                        *output_buffer++ = ((i_color & 0xf0) == 0xf0) ? 255 : i_color;
+                    }
+                } else {
+                    const uint8_t* input_buffer_end = input_buffer + graphics_buffer_width;
+                    if (graphics_buffer_shift_x < 0) input_buffer -= graphics_buffer_shift_x;
 
-                while (activ_buf_end > output_buffer) {
-                    if (input_buffer < input_buffer_end) {
-                        uint8_t i_color = *input_buffer++;
-                        i_color = ((i_color & 0xf0) == 0xf0) ? 255 : i_color;
-                        *output_buffer++ = i_color;
-                    } else
-                        *output_buffer++ = 255;
+                    while (activ_buf_end > output_buffer) {
+                        if (input_buffer < input_buffer_end) {
+                            uint8_t i_color = *input_buffer++;
+                            i_color = ((i_color & 0xf0) == 0xf0) ? 255 : i_color;
+                            *output_buffer++ = i_color;
+                        } else
+                            *output_buffer++ = 255;
+                    }
                 }
+
+                if (activ_buf_end > output_buffer)
+                    HDMI_FILL(output_buffer, 255, (size_t)(activ_buf_end - output_buffer));
 
                 break;
             }
@@ -286,6 +284,11 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                  * framebuffer to the complete logical 320x240 raster.
                  * Horizontal scaling is exact 2x; vertical scaling uses
                  * nearest-neighbour 160 -> 240. */
+                if (watara_gray_lines && (y & 1)) {
+                    const uint8_t gray = WATARA_GRAY_PALETTE_BASE + (watara_gray_level & 3u);
+                    HDMI_FILL(output_buffer, gray, SCREEN_WIDTH);
+                    break;
+                }
                 input_buffer = &graphics_buffer[((y * 2) / 3) * graphics_buffer_width];
                 for (int x = 0; x < 160; ++x) {
                     uint8_t i_color = input_buffer[x];
@@ -654,10 +657,11 @@ void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height) {
 
 //выделение и настройка общих ресурсов - 4 DMA канала, PIO программ и 2 SM
 void graphics_init() {
-#ifdef PICO_RP2350
-    memcpy(hdmi_font_6x8_sram, font_6x8, sizeof(hdmi_font_6x8_sram));
-    memcpy(hdmi_textmode_palette_sram, textmode_palette, sizeof(hdmi_textmode_palette_sram));
-#endif
+    for (uint8_t level = 0; level < 4; ++level) {
+        const uint8_t gray = (uint8_t)(level * 0x55u);
+        graphics_set_palette(WATARA_GRAY_PALETTE_BASE + level,
+                             RGB888(gray, gray, gray));
+    }
     //настройка PIO
     SM_video = pio_claim_unused_sm(PIO_VIDEO, true);
     SM_conv = pio_claim_unused_sm(PIO_VIDEO_ADDR, true);

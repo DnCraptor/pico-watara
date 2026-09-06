@@ -12,6 +12,9 @@
 #include "pico/stdlib.h"
 #include "stdlib.h"
 
+extern volatile uint8_t watara_gray_lines;
+extern volatile uint8_t watara_gray_level;
+
 uint16_t pio_program_VGA_instructions[] = {
     //     .wrap_target
     0x6008, //  0: out    pins, 8
@@ -352,20 +355,52 @@ void __time_critical_func() dma_handler_VGA() {
             }
             break;
         }
-        case GRAPHICSMODE_DEFAULT:
+        case GRAPHICSMODE_DEFAULT: {
             input_buffer_8bit = input_buffer + y * width;
+            const uint8_t gray_wire =
+                (uint8_t)(0xc0u | ((watara_gray_level & 3u) * 0x15u));
+            const uint16_t gray_pair =
+                (uint16_t)gray_wire | ((uint16_t)gray_wire << 8);
+            const bool gray_vertical = (watara_gray_lines & 1u) != 0;
+            const bool gray_horizontal = (watara_gray_lines & 2u) != 0;
+            const bool gray_row = gray_horizontal && (y & 1);
             for (int i = width; i--;) {
-                uint8_t t = *input_buffer_8bit++;
-                *output_buffer_16bit++ = current_palette[t];
-                *output_buffer_16bit++ = current_palette[t];
+                const uint8_t t = *input_buffer_8bit++;
+                const uint16_t pixel = current_palette[t];
+                if (gray_row) {
+                    *output_buffer_16bit++ = gray_pair;
+                    *output_buffer_16bit++ = gray_pair;
+                } else if (gray_vertical) {
+                    *output_buffer_16bit++ = pixel;
+                    *output_buffer_16bit++ = gray_pair;
+                } else {
+                    *output_buffer_16bit++ = pixel;
+                    *output_buffer_16bit++ = pixel;
+                }
             }
             break;
-        case GRAPHICSMODE_ASPECT:
+        }
+        case GRAPHICSMODE_ASPECT: {
             input_buffer_8bit = input_buffer + y * width;
-            for (int x = 0; x< width; x++) {
-                *output_buffer_16bit++ = current_palette[*input_buffer_8bit++];
+            const uint8_t gray_wire =
+                (uint8_t)(0xc0u | ((watara_gray_level & 3u) * 0x15u));
+            const uint16_t gray_pair =
+                (uint16_t)gray_wire | ((uint16_t)gray_wire << 8);
+            const bool gray_vertical = (watara_gray_lines & 1u) != 0;
+            const bool gray_horizontal = (watara_gray_lines & 2u) != 0;
+            const bool game_row = y >= 20 && y < 180;
+            const bool gray_row = game_row && gray_horizontal && ((y - 20) & 1);
+            for (int x = 0; x < width; x++) {
+                const uint8_t t = *input_buffer_8bit++;
+                const bool game_col = x >= 40 && x < 200;
+                const bool gray_col = game_row && game_col && gray_vertical && ((x - 40) & 1);
+                if ((gray_row && game_col) || gray_col)
+                    *output_buffer_16bit++ = gray_pair;
+                else
+                    *output_buffer_16bit++ = current_palette[t];
             }
             break;
+        }
         default:
             break;
     }

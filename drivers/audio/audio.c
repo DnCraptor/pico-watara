@@ -45,7 +45,7 @@ static volatile bool i2s_dma_buffer_ready = false;
 static uint32_t i2s_hold_sample = 0;
 static uint32_t i2s_next_hold_sample = 0;
 
-static void __not_in_flash_func(i2s_dma_irq1_handler)(void) {
+static void __scratch_y("audio_dma_irq") i2s_dma_irq1_handler(void) {
     i2s_config_t *cfg = i2s_dma_irq_config;
     if (!cfg) return;
 
@@ -204,7 +204,7 @@ void i2s_write(const i2s_config_t *i2s_config,const int16_t *samples,const size_
  * i2s_config: I2S context obtained by i2s_get_default_config()
  *     sample: pointer to an array of dma_trans_count x 32 bits samples
  */
-void __not_in_flash_func(i2s_dma_write)(i2s_config_t *i2s_config,const int16_t *samples) {
+void __scratch_y("audio_dma_write") i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
 #ifdef AUDIO_PWM_PIN
     /* PWM naturally holds the last output value while DMA is idle. */
     dma_channel_wait_for_finish_blocking(i2s_config->dma_channel);

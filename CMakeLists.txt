@@ -48,10 +48,10 @@ endif()
 
 #set(TFT ON)
 #set(ILI9341 ON)
-#set(HDMI ON)
+set(HDMI ON)
 #set(VGA ON)
 #set(TV ON)
-set(SOFTTV ON)
+#set(SOFTTV ON)
 set(I2S ON)
 
 set(CMAKE_C_STANDARD 11)
@@ -59,6 +59,9 @@ set(CMAKE_CXX_STANDARD 17)
 #add_compile_options(-flto)
 set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} -funroll-loops  -ffast-math -feliminate-unused-debug-types -ffunction-sections -fdata-sections -Ofast")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops  -ffast-math -feliminate-unused-debug-types -ffunction-sections -fdata-sections -Ofast")
+
+# Core1 has no large local arrays; keep more of SCRATCH_X available for the HDMI realtime path.
+add_compile_definitions(PICO_CORE1_STACK_SIZE=1536)
 
 set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
