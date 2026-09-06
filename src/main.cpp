@@ -468,6 +468,57 @@ static uint64_t demo_game_started_at = 0;
 static char demo_current_name[79] = { 0 };
 static uint8_t demo_duration = 0;
 static const uint16_t demo_seconds[] = { 30, 45, 60, 180, 300, 600 };
+static bool demo_title_drawn = false;
+static const uint64_t demo_title_time_us = 10000000ull;
+
+static void demo_draw_title_overlay(void) {
+#if VGA
+    const bool bezel_mode = settings.aspect_ratio;
+#else
+    const bool bezel_mode = true;
+#endif
+    const int screen_w = bezel_mode ? 240 : SV_W;
+    const int screen_h = bezel_mode ? 200 : SV_H;
+    const int bar_y = screen_h - 12;
+    const bool visible = demo_active && demo_current_name[0] &&
+                         time_us_64() - demo_game_started_at < demo_title_time_us;
+    uint8_t *screen = (uint8_t *)SCREEN;
+
+    if (!visible) {
+        if (demo_title_drawn && bezel_mode) {
+            for (int y = bar_y; y < screen_h; ++y) {
+                const uint8_t *src = &bezel[y * 240];
+                uint8_t *dst = &screen[y * 240];
+                for (int x = 0; x < 240; ++x)
+                    dst[x] = src[x] + base_bezel;
+            }
+        }
+        demo_title_drawn = false;
+        return;
+    }
+
+    for (int y = bar_y; y < screen_h; ++y)
+        memset(&screen[y * screen_w], base_bezel + 1, screen_w);
+
+    const char *dot = strrchr(demo_current_name, '.');
+    size_t len = dot ? (size_t)(dot - demo_current_name) : strlen(demo_current_name);
+    const size_t max_chars = (screen_w - 4) / 6;
+    if (len > max_chars) len = max_chars;
+    const int text_x = (screen_w - (int)len * 6) / 2;
+
+    for (size_t c = 0; c < len; ++c) {
+        const uint8_t ch = (uint8_t)(demo_current_name[c] == '_' ? ' ' : demo_current_name[c]);
+        for (int gy = 0; gy < 8; ++gy) {
+            uint8_t bits = font_6x8[ch * 8 + gy];
+            uint8_t *dst = &screen[(bar_y + 2 + gy) * screen_w + text_x + (int)c * 6];
+            for (int gx = 0; gx < 6; ++gx) {
+                if (bits & 1) dst[gx] = base_bezel;
+                bits >>= 1;
+            }
+        }
+    }
+    demo_title_drawn = true;
+}
 
 int compareFileItems(const void* a, const void* b) {
     const auto* itemA = (file_item_t *)a;
@@ -1485,6 +1536,7 @@ int __time_critical_func(main)() {
                 uint32_t sw_w = 240;
                 supervision_exec_ex((uint8_t *) SCREEN + sw_w * 20 + 40, sw_w, 0, settings.ghosting);
 #endif
+            demo_draw_title_overlay();
             // for(int x = 0; x <64; x++) graphics_set_palette(x, RGB888(bitmap.pal.color[x][0], bitmap.pal.color[x][1], bitmap.pal.color[x][2]));
 
             if (gamepad1.bits.start && gamepad1.bits.select) {
