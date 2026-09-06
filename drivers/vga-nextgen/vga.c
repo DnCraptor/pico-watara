@@ -63,6 +63,13 @@ static uint text_buffer_height = 0;
 
 static uint16_t txt_palette[16];
 
+#ifdef PICO_RP2350
+static uint8_t vga_font_8x16_sram[sizeof(font_8x16)];
+#define VGA_FONT_8X16 vga_font_8x16_sram
+#else
+#define VGA_FONT_8X16 font_8x16
+#endif
+
 //буфер 2К текстовой палитры для быстрой работы
 static uint16_t* txt_palette_fast = NULL;
 //static uint16_t txt_palette_fast[256*4];
@@ -143,7 +150,7 @@ void __time_critical_func() dma_handler_VGA() {
 
             for (int x = 0; x < text_buffer_width; x++) {
                 //из таблицы символов получаем "срез" текущего символа
-                uint8_t glyph_pixels = font_8x16[*text_buffer_line++ * font_height + glyph_line];
+                uint8_t glyph_pixels = VGA_FONT_8X16[*text_buffer_line++ * font_height + glyph_line];
                 //считываем из быстрой палитры начало таблицы быстрого преобразования 2-битных комбинаций цветов пикселей
                 uint16_t* color = &txt_palette_fast[*text_buffer_line++ * 4];
 #if 0
@@ -513,6 +520,9 @@ void graphics_set_palette(const uint8_t i, const uint32_t color888) {
 }
 
 void graphics_init() {
+#ifdef PICO_RP2350
+    memcpy(vga_font_8x16_sram, font_8x16, sizeof(vga_font_8x16_sram));
+#endif
     //инициализация палитры по умолчанию
 #if 1
     const uint8_t conv0[] = { 0b00, 0b00, 0b01, 0b10, 0b10, 0b10, 0b11, 0b11 };

@@ -793,10 +793,10 @@ uint16_t frequencies[] = { 252, 362, 366, 378, 396, 404, 408, 412, 416, 420, 424
     #ifdef CPU_FREQ
     uint8_t frequency_index = 0;
     #else
-    uint8_t frequency_index = 3;
+    uint8_t frequency_index = 2;
     #endif
 #else
-uint8_t frequency_index = 0;
+uint8_t frequency_index = 2;
 #endif
 
 #ifndef PICO_RP2040
@@ -914,29 +914,7 @@ void save_config() {
     }
 }
 #if SOFTTV
-typedef struct tv_out_mode_t {
-    // double color_freq;
-    float color_index;
-    COLOR_FREQ_t c_freq;
-    enum graphics_mode_t mode_bpp;
-    g_out_TV_t tv_system;
-    NUM_TV_LINES_t N_lines;
-    bool cb_sync_PI_shift_lines;
-    bool cb_sync_PI_shift_half_frame;
-} tv_out_mode_t;
-extern tv_out_mode_t tv_out_mode;
-
-bool color_mode=true;
-bool toggle_color() {
-    color_mode=!color_mode;
-    if(color_mode) {
-        tv_out_mode.color_index= 1.0f;
-    } else {
-        tv_out_mode.color_index= 0.0f;
-    }
-
-    return true;
-}
+bool color_mode = true;
 #endif
 const MenuItem menu_items[] = {
         {"Swap AB <> BA: %s",     ARRAY, &settings.swap_ab,  nullptr, 1, {"NO ",       "YES"}},
@@ -990,11 +968,7 @@ const MenuItem menu_items[] = {
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
-        { "TV Lines %s", ARRAY, &tv_out_mode.N_lines, nullptr, 3, { "624", "625", "524", "525" } },
-        { "Freq %s", ARRAY, &tv_out_mode.c_freq, nullptr, 1, { "3.579545", "4.433619" } },
-        { "Colors: %s", ARRAY, &color_mode, &toggle_color, 1, { "NO ", "YES" } },
-        { "Shift lines %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_lines, nullptr, 1, { "NO ", "YES" } },
-        { "Shift half frame %s", ARRAY, &tv_out_mode.cb_sync_PI_shift_half_frame, nullptr, 1, { "NO ", "YES" } },
+        { "Colors: %s", ARRAY, &color_mode, nullptr, 1, { "NO ", "YES" } },
 #endif
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -1167,6 +1141,9 @@ void menu() {
         sleep_ms(125);
     }
 
+#if SOFTTV
+    tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
+#endif
 #if VGA
     if (settings.aspect_ratio) {
         graphics_set_offset(40, 20);
@@ -1287,6 +1264,9 @@ int __time_critical_func(main)() {
             update_palette();
         }
 
+#if SOFTTV
+        tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
+#endif
 #if VGA
         if (settings.aspect_ratio) {
             graphics_set_offset(40, 20);

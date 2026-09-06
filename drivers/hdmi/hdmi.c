@@ -36,6 +36,42 @@ static int graphics_buffer_shift_y = 0;
 //текстовый буфер
 uint8_t* text_buffer = NULL;
 
+#ifdef PICO_RP2350
+static uint8_t hdmi_font_6x8_sram[sizeof(font_6x8)];
+static uint8_t hdmi_textmode_palette_sram[sizeof(textmode_palette)];
+#define HDMI_FONT_6X8 hdmi_font_6x8_sram
+#define HDMI_TEXTMODE_PALETTE hdmi_textmode_palette_sram
+
+static inline __attribute__((always_inline)) void hdmi_fill_u8(void *dst_void, uint8_t value, size_t count) {
+    volatile uint8_t *dst8 = (volatile uint8_t *)dst_void;
+    while (count && ((uintptr_t)dst8 & 3u)) {
+        *dst8++ = value;
+        --count;
+    }
+    const uint32_t word = (uint32_t)value * 0x01010101u;
+    volatile uint32_t *dst32 = (volatile uint32_t *)dst8;
+    while (count >= 16) {
+        dst32[0] = word;
+        dst32[1] = word;
+        dst32[2] = word;
+        dst32[3] = word;
+        dst32 += 4;
+        count -= 16;
+    }
+    while (count >= 4) {
+        *dst32++ = word;
+        count -= 4;
+    }
+    dst8 = (volatile uint8_t *)dst32;
+    while (count--) *dst8++ = value;
+}
+#define HDMI_FILL(dst, value, count) hdmi_fill_u8((dst), (value), (count))
+#else
+#define HDMI_FONT_6X8 font_6x8
+#define HDMI_TEXTMODE_PALETTE textmode_palette
+#define HDMI_FILL(dst, value, count) memset((dst), (value), (count))
+#endif
+
 
 //DMA каналы
 //каналы работы с первичным графическим буфером
@@ -194,13 +230,13 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             case VGA_320x240x256: {
                 //заполняем пространство сверху и снизу графического буфера
                 if (y <= graphics_buffer_shift_y || y >= (graphics_buffer_shift_y + graphics_buffer_height)) {
-                    memset(output_buffer, 255,SCREEN_WIDTH);
+                    HDMI_FILL(output_buffer, 255,SCREEN_WIDTH);
                     break;
                 }
 
                 uint8_t* activ_buf_end = output_buffer + SCREEN_WIDTH;
                 //рисуем пространство слева от буфера
-                memset(output_buffer, 255, graphics_buffer_shift_x);
+                HDMI_FILL(output_buffer, 255, graphics_buffer_shift_x);
                 output_buffer += graphics_buffer_shift_x;
 
                 //рисуем сам видеобуфер+пространство справа
@@ -229,12 +265,12 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                     const uint16_t offset = (y / 8) * (TEXTMODE_COLS * 2) + x * 2;
                     const uint8_t c = text_buffer[offset];
                     const uint8_t colorIndex = text_buffer[offset + 1];
-                    uint8_t glyph_row = font_6x8[c * 8 + y % 8];
+                    uint8_t glyph_row = HDMI_FONT_6X8[c * 8 + y % 8];
 
                     for (int bit = 6; bit--;) {
                         *output_buffer++ = glyph_row & 1
-                                               ? textmode_palette[colorIndex & 0xf] //цвет шрифта
-                                               : textmode_palette[colorIndex >> 4]; //цвет фона
+                                               ? HDMI_TEXTMODE_PALETTE[colorIndex & 0xf] //цвет шрифта
+                                               : HDMI_TEXTMODE_PALETTE[colorIndex >> 4]; //цвет фона
 
                         glyph_row >>= 1;
                     }
@@ -245,48 +281,48 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         }
 
 
-        // memset(activ_buf,2,320);//test
+        // HDMI_FILL(activ_buf,2,320);//test
 
         //ССИ
         //для выравнивания синхры
 
         // --|_|---|_|---|_|----
         //---|___________|-----
-        memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 24);
-        memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
-        memset(activ_buf + 392,BASE_HDMI_CTRL_INX, 8);
+        HDMI_FILL(activ_buf + 48,BASE_HDMI_CTRL_INX, 24);
+        HDMI_FILL(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
+        HDMI_FILL(activ_buf + 392,BASE_HDMI_CTRL_INX, 8);
 
         //без выравнивания
         // --|_|---|_|---|_|----
         //------|___________|----
-        //   memset(activ_buf+320,BASE_HDMI_CTRL_INX,8);
-        //   memset(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
-        //   memset(activ_buf+376,BASE_HDMI_CTRL_INX,24);
+        //   HDMI_FILL(activ_buf+320,BASE_HDMI_CTRL_INX,8);
+        //   HDMI_FILL(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
+        //   HDMI_FILL(activ_buf+376,BASE_HDMI_CTRL_INX,24);
     } else {
         if ((line >= 490) && (line < 492)) {
             //кадровый синхроимпульс
             //для выравнивания синхры
             // --|_|---|_|---|_|----
             //---|___________|-----
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX + 2, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 3, 48);
+            HDMI_FILL(activ_buf + 48,BASE_HDMI_CTRL_INX + 2, 352);
+            HDMI_FILL(activ_buf,BASE_HDMI_CTRL_INX + 3, 48);
             //без выравнивания
             // --|_|---|_|---|_|----
             //-------|___________|----
 
-            // memset(activ_buf,BASE_HDMI_CTRL_INX+2,328);
-            // memset(activ_buf+328,BASE_HDMI_CTRL_INX+3,48);
-            // memset(activ_buf+376,BASE_HDMI_CTRL_INX+2,24);
+            // HDMI_FILL(activ_buf,BASE_HDMI_CTRL_INX+2,328);
+            // HDMI_FILL(activ_buf+328,BASE_HDMI_CTRL_INX+3,48);
+            // HDMI_FILL(activ_buf+376,BASE_HDMI_CTRL_INX+2,24);
         } else {
             //ССИ без изображения
             //для выравнивания синхры
 
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
+            HDMI_FILL(activ_buf + 48,BASE_HDMI_CTRL_INX, 352);
+            HDMI_FILL(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
 
-            // memset(activ_buf,BASE_HDMI_CTRL_INX,328);
-            // memset(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
-            // memset(activ_buf+376,BASE_HDMI_CTRL_INX,24);
+            // HDMI_FILL(activ_buf,BASE_HDMI_CTRL_INX,328);
+            // HDMI_FILL(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
+            // HDMI_FILL(activ_buf+376,BASE_HDMI_CTRL_INX,24);
         };
     }
 
@@ -565,6 +601,10 @@ void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height) {
 
 //выделение и настройка общих ресурсов - 4 DMA канала, PIO программ и 2 SM
 void graphics_init() {
+#ifdef PICO_RP2350
+    memcpy(hdmi_font_6x8_sram, font_6x8, sizeof(hdmi_font_6x8_sram));
+    memcpy(hdmi_textmode_palette_sram, textmode_palette, sizeof(hdmi_textmode_palette_sram));
+#endif
     //настройка PIO
     SM_video = pio_claim_unused_sm(PIO_VIDEO, true);
     SM_conv = pio_claim_unused_sm(PIO_VIDEO_ADDR, true);
