@@ -97,10 +97,8 @@ static G_BUFFER graphics_buffer = {
 };
 
 #define OVERLAY_BAR_Y 228
-#define OVERLAY_TEXT_Y 230
-#define OVERLAY_TEXT_MAX 52
-static char overlay_text[2][OVERLAY_TEXT_MAX + 1];
-static uint8_t overlay_text_len[2];
+#define OVERLAY_TEXT_MAX (TEXTMODE_COLS - 1)
+static uint8_t overlay_text_cells[2][TEXTMODE_COLS * 2];
 static volatile uint8_t overlay_text_index = 0;
 static volatile bool overlay_enabled = false;
 
@@ -219,6 +217,49 @@ void tv_copy_u8(void* dst_void, const void* src_void, size_t count)
     }
 
     while (count--) *dst8++ = *src8++;
+}
+
+static inline __attribute__((always_inline))
+void tv_render_text_scanline(uint8_t* output_buffer8, int out_width, int li,
+                             const uint8_t* cell, int glyph_y)
+{
+    const int text_width = TEXTMODE_COLS * 6;
+    int source_acc = 0;
+    int char_x = 0;
+    int glyph_x = 0;
+
+    uint8_t glyph_row = TV_FONT_6X8[cell[0] * 8 + glyph_y];
+    uint8_t colorIndex = cell[1];
+    uint8_t palette_index = TV_TEXTMODE_PALETTE[(glyph_row & 1)
+                                                 ? (colorIndex & 0xf)
+                                                 : (colorIndex >> 4)];
+    uint32_t cout32 = conv_color[li][palette_index];
+    uint8_t* c_4 = (uint8_t*)&cout32;
+
+    for (int i = 0; i < out_width; ++i) {
+        *output_buffer8++ = c_4[i & 3];
+
+        source_acc += text_width;
+        if (source_acc >= out_width) {
+            source_acc -= out_width;
+            glyph_x++;
+
+            if (glyph_x == 6) {
+                glyph_x = 0;
+                char_x++;
+                if (char_x == TEXTMODE_COLS) continue;
+                cell += 2;
+                glyph_row = TV_FONT_6X8[cell[0] * 8 + glyph_y];
+                colorIndex = cell[1];
+            }
+
+            palette_index = TV_TEXTMODE_PALETTE[((glyph_row >> glyph_x) & 1)
+                                                 ? (colorIndex & 0xf)
+                                                 : (colorIndex >> 4)];
+            cout32 = conv_color[li][palette_index];
+            c_4 = (uint8_t*)&cout32;
+        }
+    }
 }
 
 static repeating_timer_t video_timer;
@@ -1057,77 +1098,50 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                 */
                 if (input_buffer != NULL) {
                     if (overlay_enabled && y >= OVERLAY_BAR_Y) {
+                        const int overlay_y = y - OVERLAY_BAR_Y;
                         const int out_width = video_mode.img_W - d_end;
-                        const uint8_t overlay_index = overlay_text_index;
-                        const char *text = overlay_text[overlay_index];
-                        const int len = overlay_text_len[overlay_index];
-                        const int text_x = (320 - len * 6) / 2;
                         output_buffer8 += buffer_shift;
-                        for (int i = 0; i < out_width; ++i) {
-                            const int sx = (i * 320) / out_width;
-                            uint8_t color = 129;
-                            if (y >= OVERLAY_TEXT_Y && y < OVERLAY_TEXT_Y + 8 &&
-                                sx >= text_x && sx < text_x + len * 6) {
-                                const int tx = sx - text_x;
-                                const int c = tx / 6;
-                                const int gx = tx % 6;
-                                const uint8_t bits = TV_FONT_6X8[(uint8_t)text[c] * 8 + (y - OVERLAY_TEXT_Y)];
-                                if (bits & (1u << gx)) color = 128;
-                            }
-                            uint32_t cout32 = conv_color[li][color];
-                            uint8_t *c_4 = (uint8_t *)&cout32;
-                            *output_buffer8++ = c_4[i & 3];
+
+                        if (overlay_y >= 2 && overlay_y < 10) {
+                            const uint8_t overlay_index = overlay_text_index;
+                            tv_render_text_scanline(output_buffer8, out_width, li,
+                                                    overlay_text_cells[overlay_index],
+                                                    overlay_y - 2);
+                        } else {
+                            uint32_t cout32 = conv_color[li][200];
+                            uint8_t* c_4 = (uint8_t*)&cout32;
+                            for (int i = 0; i < out_width; ++i)
+                                *output_buffer8++ = c_4[i & 3];
                         }
                     } else switch (tv_out_mode.mode_bpp) {
                         case TEXTMODE_DEFAULT: {
-                            /*
-                             * conv_color contains one four-sample chroma period for
-                             * each logical colour. Keep that phase continuous across
-                             * the complete line and scale the text pixels to the same
-                             * active span used by graphics mode.
-                             */
                             const int out_width = video_mode.img_W - d_end;
-                            const int text_width = TEXTMODE_COLS * 6;
                             const int text_row = y >> 3;
                             const int glyph_y = y & 7;
-                            int source_acc = 0;
-                            int char_x = 0;
-                            int glyph_x = 0;
+                            output_buffer8 += buffer_shift;
+                            tv_render_text_scanline(output_buffer8, out_width, li,
+                                                    text_buffer + text_row * (TEXTMODE_COLS * 2),
+                                                    glyph_y);
+                        }
+                        break;
+                        case GRAPHICSMODE_3X3: {
+                            /* Watara fullscreen 4:3.  The emulated LCD is
+                             * 160x160; map it to the complete logical
+                             * 320x240 TV raster before the analog sample
+                             * conversion.  Keep chroma phase tied to the
+                             * physical output sample, not to source pixels. */
+                            const int out_width = video_mode.img_W - d_end;
+                            const int source_y = (y * 2) / 3;
+                            const uint8_t *source = input_buffer +
+                                                    source_y * graphics_buffer.width;
 
                             output_buffer8 += buffer_shift;
-
-                            const uint8_t* cell = text_buffer + text_row * (TEXTMODE_COLS * 2);
-                            uint8_t glyph_row = TV_FONT_6X8[cell[0] * 8 + glyph_y];
-                            uint8_t colorIndex = cell[1];
-                            uint8_t palette_index = TV_TEXTMODE_PALETTE[(glyph_row & 1)
-                                                                         ? (colorIndex & 0xf)
-                                                                         : (colorIndex >> 4)];
-                            uint32_t cout32 = conv_color[li][palette_index];
-                            uint8_t* c_4 = (uint8_t*)&cout32;
-
-                            for (int i = 0; i < out_width; i++) {
+                            for (int i = 0; i < out_width; ++i) {
+                                const int source_x = (i * 160) / out_width;
+                                const uint8_t color = source[source_x];
+                                uint32_t cout32 = conv_color[li][color];
+                                uint8_t *c_4 = (uint8_t *)&cout32;
                                 *output_buffer8++ = c_4[i & 3];
-
-                                source_acc += text_width;
-                                if (source_acc >= out_width) {
-                                    source_acc -= out_width;
-                                    glyph_x++;
-
-                                    if (glyph_x == 6) {
-                                        glyph_x = 0;
-                                        char_x++;
-                                        if (char_x == TEXTMODE_COLS) continue;
-                                        cell += 2;
-                                        glyph_row = TV_FONT_6X8[cell[0] * 8 + glyph_y];
-                                        colorIndex = cell[1];
-                                    }
-
-                                    palette_index = TV_TEXTMODE_PALETTE[((glyph_row >> glyph_x) & 1)
-                                                                         ? (colorIndex & 0xf)
-                                                                         : (colorIndex >> 4)];
-                                    cout32 = conv_color[li][palette_index];
-                                    c_4 = (uint8_t*)&cout32;
-                                }
                             }
                         }
                         break;
@@ -1191,11 +1205,18 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
 void graphics_set_overlay(const char *text, bool enabled) {
     if (enabled && text) {
         const uint8_t next = overlay_text_index ^ 1u;
-        strncpy(overlay_text[next], text, OVERLAY_TEXT_MAX);
-        overlay_text[next][OVERLAY_TEXT_MAX] = '\0';
-        uint8_t len = 0;
-        while (len < OVERLAY_TEXT_MAX && overlay_text[next][len]) ++len;
-        overlay_text_len[next] = len;
+        uint8_t *cells = overlay_text_cells[next];
+        for (int i = 0; i < TEXTMODE_COLS; ++i) {
+            cells[i * 2] = ' ';
+            cells[i * 2 + 1] = 0x0f; /* white on black, text-mode palette */
+        }
+
+        int len = 0;
+        while (len < OVERLAY_TEXT_MAX && text[len]) ++len;
+        const int start = (TEXTMODE_COLS - len) / 2;
+        for (int i = 0; i < len; ++i)
+            cells[(start + i) * 2] = (uint8_t)text[i];
+
         __asm volatile ("dmb" ::: "memory");
         overlay_text_index = next;
     }

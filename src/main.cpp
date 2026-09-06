@@ -1073,7 +1073,7 @@ void load_config() {
     rgb3 = settings.rgb3;
     if (settings.ghosting > 6) settings.ghosting = 4;
     if (settings.tv_system > 1) settings.tv_system = 0;
-#if HDMI
+#if HDMI || SOFTTV
     if (settings.aspect_ratio > 2) settings.aspect_ratio = 0;
 #else
     if (settings.aspect_ratio > 1) settings.aspect_ratio = 0;
@@ -1145,7 +1145,7 @@ const MenuItem menu_items[] = {
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
         { "RGB3: %06Xh ", HEX, &rgb3, nullptr, 0xFFFFFF },
-#if HDMI
+#if HDMI || SOFTTV
         { "Display mode: %s", ARRAY, &settings.aspect_ratio, nullptr, 2, {"Native", "Bezel ", "4:3   "}},
 #else
         { "Keep aspect ratio: %s", ARRAY, &settings.aspect_ratio, nullptr, 1, {"NO ", "YES"}},
@@ -1340,7 +1340,7 @@ void menu() {
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
-#if HDMI
+#if HDMI || SOFTTV
     if (settings.aspect_ratio == 2) {
         graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
         graphics_set_offset(0, 0);
@@ -1491,7 +1491,7 @@ int __time_critical_func(main)() {
         tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
         tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
-#if HDMI
+#if HDMI || SOFTTV
         if (settings.aspect_ratio == 2) {
             graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
             graphics_set_offset(0, 0);
