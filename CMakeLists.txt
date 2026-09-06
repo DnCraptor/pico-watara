@@ -17,9 +17,9 @@ set(BUILD_VERSION "2.1.6")
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards )
 
 #set(PICO_PLATFORM "rp2040" CACHE STRING "Chip type")
-set(PICO_PLATFORM "rp2350" CACHE STRING "Chip type")
+#set(PICO_PLATFORM "rp2350" CACHE STRING "Chip type")
 
-set(PICO_BOARD "murmulator" CACHE STRING "Board type")
+#set(PICO_BOARD "murmulator" CACHE STRING "Board type")
 #set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
 #set(PICO_BOARD "olimex-pico-pc" CACHE STRING "Board type")
 #set(PICO_BOARD "waveshare_rp2040_pizero" CACHE STRING "Board type")
@@ -30,6 +30,7 @@ include(pico_sdk_import.cmake)
 project(watara C CXX ASM)
 SET(BUILD_NAME "${PROJECT_NAME}")
 
+option(RELEASE_BUILD "Build release matrix without IDE-local forced options" OFF)
 option(I2S "Enable I2S sound" OFF)
 option(I2S_CS4334 "Enable I2S CS4334 sound" OFF)
 option(VGA "Enable VGA" OFF)
@@ -41,18 +42,6 @@ option(SOFTTV "Enable TV soft composite output" OFF)
 if( ${PICO_PLATFORM} MATCHES "rp2350" )
 option(m1p2launcher "Enable m1p2-launcher support" OFF)
 endif()
-
-#set(m1p2launcher ON)
-
-#set(I2S ON)
-
-#set(TFT ON)
-#set(ILI9341 ON)
-set(HDMI ON)
-#set(VGA ON)
-#set(TV ON)
-#set(SOFTTV ON)
-set(I2S ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
