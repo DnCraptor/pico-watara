@@ -1495,6 +1495,7 @@ int __time_critical_func(main)() {
     bool need_browser = true;
     while (true) {
         if (need_browser) {
+            i2s_pause(&i2s_config);
             graphics_set_mode(TEXTMODE_DEFAULT);
             demo_requested = false;
             filebrowser(HOME_DIR, "sv,bin");
@@ -1572,6 +1573,7 @@ int __time_critical_func(main)() {
             // for(int x = 0; x <64; x++) graphics_set_palette(x, RGB888(bitmap.pal.color[x][0], bitmap.pal.color[x][1], bitmap.pal.color[x][2]));
 
             if (gamepad1.bits.start && gamepad1.bits.select) {
+                i2s_pause(&i2s_config);
                 menu();
                 if (reboot) { /// не работало нормально, видимо ресурсы где-то текут, пара ребутов и в даун, сделал, чтобы весь чип перегружало
                     watchdog_enable(10, true);
@@ -1619,6 +1621,7 @@ int __time_critical_func(main)() {
             i2s_dma_write(&i2s_config, (const int16_t *) audio_buffer);
         }
 
+        i2s_pause(&i2s_config);
         supervision_reset();
         update_palette();
 

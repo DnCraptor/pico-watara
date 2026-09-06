@@ -253,6 +253,25 @@ void __scratch_y("audio_dma_write") i2s_dma_write(i2s_config_t *i2s_config,const
                                          i2s_config->dma_trans_count);
 }
 
+void __scratch_y("audio_pause") i2s_pause(i2s_config_t *i2s_config) {
+#ifdef AUDIO_PWM_PIN
+    dma_channel_wait_for_finish_blocking(i2s_config->dma_channel);
+    const uint32_t silence = (65536u / 2u) >> (4u + i2s_config->volume);
+    const uint slice_num = pwm_gpio_to_slice_num(PWM_PIN0);
+    pwm_hw->slice[slice_num].cc = silence | (silence << 16);
+#else
+    i2s_dma_buffer_ready = false;
+    i2s_next_hold_sample = 0;
+    if (i2s_dma_started) {
+        while (!i2s_dma_holding) { }
+        i2s_hold_sample = 0;
+        __asm volatile ("dmb" ::: "memory");
+    } else {
+        i2s_hold_sample = 0;
+    }
+#endif
+}
+
 /**
  * Adjust the output volume
  * i2s_config: I2S context obtained by i2s_get_default_config()
