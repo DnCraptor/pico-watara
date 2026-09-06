@@ -48,7 +48,7 @@ uint8_t SCREEN[200][240];
 uint8_t TEXT_BUFFER[TEXTMODE_COLS*TEXTMODE_ROWS*2];
 
 SETTINGS settings = {
-    .version = 1,
+    .version = 2,
     .swap_ab = false,
     .aspect_ratio = false,
     .ghosting = 4,
@@ -1039,10 +1039,7 @@ static bool config_read(const char* pathname) {
     const FRESULT fr = f_read(&file, &loaded, sizeof(loaded), &bytes_read);
     f_close(&file);
 
-    if (FR_OK != fr ||
-        (bytes_read != sizeof(loaded) &&
-         bytes_read != sizeof(loaded) - 2 &&
-         bytes_read != sizeof(loaded) - 3)) {
+    if (FR_OK != fr || bytes_read != sizeof(loaded) || loaded.version != 2) {
         return false;
     }
 
@@ -1062,16 +1059,11 @@ static bool config_write(const char* pathname) {
 
 void load_config() {
     char pathname[256];
-    bool imported_legacy = false;
 
     if (FR_OK == f_mount(&fs, "", 1)) {
         config_mkdirs();
         config_path(pathname, sizeof(pathname));
-
-        if (!config_read(pathname)) {
-            snprintf(pathname, sizeof(pathname), "%s\\emulator.cfg", HOME_DIR);
-            imported_legacy = config_read(pathname);
-        }
+        config_read(pathname);
     }
 
     rgb0 = settings.rgb0;
@@ -1101,10 +1093,6 @@ void load_config() {
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
 #endif
 
-    if (imported_legacy) {
-        config_path(pathname, sizeof(pathname));
-        config_write(pathname);
-    }
 }
 
 void save_config() {
