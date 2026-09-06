@@ -58,7 +58,8 @@ SETTINGS settings = {
     .rgb1 = 0xFFB266,
     .rgb2 = 0xCC0066,
     .rgb3 = 0x663300,
-    .instant_ignition = false
+    .instant_ignition = false,
+    .tv_system = 0
 };
 
 uint32_t rgb0;
@@ -886,31 +887,117 @@ bool load() {
     return true;
 }
 
-void load_config() {
+static const char* config_platform_name() {
+#ifdef PICO_RP2350
+    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p2";
+    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp2";
+    if (strcmp(PICO_BOARD, "waveshare_rp2350_pizero") == 0) return "z0p2";
+    return "m1p2";
+#else
+    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p1";
+    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp1";
+    if (strcmp(PICO_BOARD, "waveshare_rp2040_pizero") == 0) return "z0p1";
+    return "m1p1";
+#endif
+}
+
+static const char* config_video_name() {
+#if HDMI
+    return "hdmi";
+#elif VGA
+    return "vga";
+#elif SOFTTV
+    return "softtv";
+#elif TV
+    return "tv";
+#elif TFT
+    return "tft";
+#else
+    return "unknown";
+#endif
+}
+
+static void config_path(char* pathname, size_t size) {
+    snprintf(pathname, size, "/.config/watara/%s/%s/emulator.cfg",
+             config_platform_name(), config_video_name());
+}
+
+static void config_mkdirs() {
+    char path[128];
+    f_mkdir("/.config");
+    f_mkdir("/.config/watara");
+    snprintf(path, sizeof(path), "/.config/watara/%s", config_platform_name());
+    f_mkdir(path);
+    snprintf(path, sizeof(path), "/.config/watara/%s/%s",
+             config_platform_name(), config_video_name());
+    f_mkdir(path);
+}
+
+static bool config_read(const char* pathname) {
     FIL file;
-    char pathname[256];
-    sprintf(pathname, "%s\\emulator.cfg", HOME_DIR);
-    if (FR_OK == f_mount(&fs, "", 1) && FR_OK == f_open(&file, pathname, FA_READ)) {
-        UINT bytes_read;
-        f_read(&file, &settings, sizeof(settings), &bytes_read);
-        f_close(&file);
+    if (FR_OK != f_open(&file, pathname, FA_READ)) return false;
+
+    SETTINGS loaded = settings;
+    UINT bytes_read = 0;
+    const FRESULT fr = f_read(&file, &loaded, sizeof(loaded), &bytes_read);
+    f_close(&file);
+
+    if (FR_OK != fr ||
+        (bytes_read != sizeof(loaded) && bytes_read != sizeof(loaded) - 1)) {
+        return false;
     }
+
+    settings = loaded;
+    return true;
+}
+
+static bool config_write(const char* pathname) {
+    FIL file;
+    if (FR_OK != f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) return false;
+
+    UINT bytes_written = 0;
+    const FRESULT fr = f_write(&file, &settings, sizeof(settings), &bytes_written);
+    f_close(&file);
+    return FR_OK == fr && bytes_written == sizeof(settings);
+}
+
+void load_config() {
+    char pathname[256];
+    bool imported_legacy = false;
+
+    if (FR_OK == f_mount(&fs, "", 1)) {
+        config_mkdirs();
+        config_path(pathname, sizeof(pathname));
+
+        if (!config_read(pathname)) {
+            snprintf(pathname, sizeof(pathname), "%s\\emulator.cfg", HOME_DIR);
+            imported_legacy = config_read(pathname);
+        }
+    }
+
     rgb0 = settings.rgb0;
     rgb1 = settings.rgb1;
     rgb2 = settings.rgb2;
     rgb3 = settings.rgb3;
     if (settings.ghosting > 6) settings.ghosting = 4;
+    if (settings.tv_system > 1) settings.tv_system = 0;
+#if SOFTTV
+    tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
+#endif
+
+    if (imported_legacy) {
+        config_path(pathname, sizeof(pathname));
+        config_write(pathname);
+    }
 }
 
 void save_config() {
-    FIL file;
     char pathname[256];
-    sprintf(pathname, "%s\\emulator.cfg", HOME_DIR);
 
-    if (FR_OK == f_mount(&fs, "", 1) && FR_OK == f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) {
-        UINT bytes_writen;
-        f_write(&file, &settings, sizeof(settings), &bytes_writen);
-        f_close(&file);
+    if (FR_OK == f_mount(&fs, "", 1)) {
+        config_mkdirs();
+        config_path(pathname, sizeof(pathname));
+        config_write(pathname);
     }
 }
 #if SOFTTV
@@ -967,7 +1054,7 @@ const MenuItem menu_items[] = {
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
 #if SOFTTV
         { "" },
-        { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
+        { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
         { "Colors: %s", ARRAY, &color_mode, nullptr, 1, { "NO ", "YES" } },
 #endif
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -1082,7 +1169,7 @@ void menu() {
                     case ROM_SELECT:
                         if (gamepad1.bits.start) {
                             reboot = true;
-                            return;
+                            exit = true;
                         }
                         break;
                     default:
@@ -1142,6 +1229,7 @@ void menu() {
     }
 
 #if SOFTTV
+    tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
@@ -1265,6 +1353,7 @@ int __time_critical_func(main)() {
         }
 
 #if SOFTTV
+        tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
         tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
