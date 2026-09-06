@@ -461,6 +461,14 @@ typedef struct __attribute__((__packed__)) {
 constexpr int max_files = 600;
 file_item_t * fileItems = (file_item_t *)(&SCREEN[0][0]);
 
+static bool demo_requested = false;
+static bool demo_active = false;
+static bool demo_advance_pending = false;
+static uint64_t demo_game_started_at = 0;
+static char demo_current_name[79] = { 0 };
+static uint8_t demo_duration = 0;
+static const uint16_t demo_seconds[] = { 30, 45, 60, 180, 300, 600 };
+
 int compareFileItems(const void* a, const void* b) {
     const auto* itemA = (file_item_t *)a;
     const auto* itemB = (file_item_t *)b;
@@ -571,8 +579,47 @@ bool filebrowser_loadfile(const char pathname[256]) {
     return true;
 }
 
+static bool demo_load_next_rom(const char *after_name) {
+    if (FR_OK != f_mount(&fs, "SD", 1))
+        return false;
+
+    DIR dir;
+    FILINFO info;
+    if (FR_OK != f_opendir(&dir, HOME_DIR))
+        return false;
+
+    char best[79] = { 0 };
+    while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
+        if (info.fattrib & AM_DIR)
+            continue;
+        if (!isExecutable(info.fname, "sv,bin"))
+            continue;
+        if (after_name && after_name[0] && strcmp(info.fname, after_name) <= 0)
+            continue;
+        if (!best[0] || strcmp(info.fname, best) < 0) {
+            strncpy(best, info.fname, sizeof(best) - 1);
+            best[sizeof(best) - 1] = '\0';
+        }
+    }
+    f_closedir(&dir);
+
+    if (!best[0])
+        return false;
+
+    char pathname[256];
+    snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
+    if (!filebrowser_loadfile(pathname))
+        return false;
+
+    strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
+    demo_current_name[sizeof(demo_current_name) - 1] = '\0';
+    demo_game_started_at = time_us_64();
+    return true;
+}
+
 void filebrowser(const char pathname[256], const char executables[11]) {
     bool debounce = true;
+    bool demo_debounce = false;
     char basepath[256];
     char tmp[TEXTMODE_COLS + 1];
     strcpy(basepath, pathname);
@@ -617,6 +664,8 @@ void filebrowser(const char pathname[256], const char executables[11]) {
             draw_text("PSRAM", off, 29, 7, 0);
         else
             draw_text("FLASH", off, 29, 7, 0);
+        off += 5;
+        draw_text(" B Demo", off, 29, 0, 3);
 
         if (FR_OK != f_opendir(&dir, basepath)) {
             draw_text("Failed to open directory", 1, 1, 4, 0);
@@ -657,6 +706,13 @@ void filebrowser(const char pathname[256], const char executables[11]) {
 
             if (!debounce) {
                 debounce = !gamepad1.bits.start;
+            }
+
+            if (!gamepad1.bits.b)
+                demo_debounce = true;
+            if (demo_debounce && gamepad1.bits.b) {
+                demo_requested = true;
+                return;
             }
 
             // ESCAPE
@@ -774,6 +830,7 @@ enum menu_type_e {
 
     SAVE,
     LOAD,
+    START_DEMO,
     ROM_SELECT,
     RETURN,
 };
@@ -1052,6 +1109,7 @@ const MenuItem menu_items[] = {
         { "Keep aspect ratio: %s",     ARRAY, &settings.aspect_ratio,  nullptr, 1, {"NO ",       "YES"}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
+        { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
@@ -1068,6 +1126,7 @@ const MenuItem menu_items[] = {
     { "252", "362", "366", "378", "396", "404", "408", "412", "416", "420", "424", "432" }
 },
 { "Press START / Enter to apply", NONE },
+    { "Start Demo", START_DEMO },
     { "Reset to ROM select", ROM_SELECT },
     { "Return to game", RETURN }
 };
@@ -1164,6 +1223,13 @@ void menu() {
                     case RETURN:
                         if (gamepad1.bits.start)
                             exit = true;
+                        break;
+
+                    case START_DEMO:
+                        if (gamepad1.bits.start) {
+                            demo_requested = true;
+                            exit = true;
+                        }
                         break;
 
                     case ROM_SELECT:
@@ -1343,10 +1409,26 @@ int __time_critical_func(main)() {
     supervision_init();
     update_palette();
 
+    bool need_browser = true;
     while (true) {
+        if (need_browser) {
+            graphics_set_mode(TEXTMODE_DEFAULT);
+            demo_requested = false;
+            filebrowser(HOME_DIR, "sv,bin");
 
-        graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "sv,bin");
+            if (demo_requested) {
+                demo_requested = false;
+                demo_active = true;
+                demo_current_name[0] = '\0';
+                if (!demo_load_next_rom(nullptr)) {
+                    demo_active = false;
+                    continue;
+                }
+            } else {
+                demo_active = false;
+            }
+            need_browser = false;
+        }
 
         if (supervision_load((uint8_t *)rom, rom_size) ) {
             update_palette();
@@ -1419,8 +1501,19 @@ int __time_critical_func(main)() {
                         screen[i] = bezel[i] + base_bezel;
                     }
                 }
+                if (demo_requested)
+                    break;
             }
 
+            if (demo_active) {
+                const uint8_t duration_index = demo_duration < count_of(demo_seconds)
+                                             ? demo_duration : 0;
+                const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
+                if (time_us_64() - demo_game_started_at >= duration_us) {
+                    demo_advance_pending = true;
+                    break;
+                }
+            }
 
             frame++;
             if (limit_fps) {
@@ -1444,6 +1537,22 @@ int __time_critical_func(main)() {
 
         supervision_reset();
         update_palette();
+
+        if (demo_requested) {
+            demo_requested = false;
+            demo_active = true;
+            demo_current_name[0] = '\0';
+            if (demo_load_next_rom(nullptr))
+                continue;
+            demo_active = false;
+        } else if (demo_active && demo_advance_pending) {
+            demo_advance_pending = false;
+            if (demo_load_next_rom(demo_current_name))
+                continue;
+            demo_active = false;
+        }
+
+        need_browser = true;
     }
     __unreachable();
 }
