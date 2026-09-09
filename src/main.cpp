@@ -48,7 +48,7 @@ uint8_t SCREEN[200][240];
 uint8_t TEXT_BUFFER[TEXTMODE_COLS*TEXTMODE_ROWS*2];
 
 SETTINGS settings = {
-    .version = 2,
+    .version = 3,
     .swap_ab = false,
     .aspect_ratio = false,
     .ghosting = 4,
@@ -61,7 +61,9 @@ SETTINGS settings = {
     .instant_ignition = false,
     .tv_system = 0,
     .gray_lines = 0,
-    .gray_level = 1
+    .gray_level = 1,
+    .demo_duration = 0,
+    .color_mode = true
 };
 
 uint32_t rgb0;
@@ -471,8 +473,7 @@ static bool demo_active = false;
 static bool demo_advance_pending = false;
 static uint64_t demo_game_started_at = 0;
 static char demo_current_name[79] = { 0 };
-static uint8_t demo_duration = 0;
-static const uint16_t demo_seconds[] = { 30, 45, 60, 180, 300, 600 };
+static const uint16_t demo_seconds[] = { 15, 30, 45, 60, 120, 180, 300, 600 };
 static bool demo_title_drawn = false;
 static const uint64_t demo_title_time_us = 10000000ull;
 
@@ -1059,7 +1060,7 @@ static bool config_read(const char* pathname) {
     const FRESULT fr = f_read(&file, &loaded, sizeof(loaded), &bytes_read);
     f_close(&file);
 
-    if (FR_OK != fr || bytes_read != sizeof(loaded) || loaded.version != 2) {
+    if (FR_OK != fr || bytes_read != sizeof(loaded) || loaded.version != 3) {
         return false;
     }
 
@@ -1073,8 +1074,8 @@ static bool config_write(const char* pathname) {
 
     UINT bytes_written = 0;
     const FRESULT fr = f_write(&file, &settings, sizeof(settings), &bytes_written);
-    f_close(&file);
-    return FR_OK == fr && bytes_written == sizeof(settings);
+    const FRESULT close_fr = f_close(&file);
+    return FR_OK == fr && bytes_written == sizeof(settings) && FR_OK == close_fr;
 }
 
 void load_config() {
@@ -1092,6 +1093,7 @@ void load_config() {
     rgb3 = settings.rgb3;
     if (settings.ghosting > 6) settings.ghosting = 4;
     if (settings.tv_system > 1) settings.tv_system = 0;
+    if (settings.demo_duration >= count_of(demo_seconds)) settings.demo_duration = 0;
 #if HDMI || SOFTTV
     if (settings.aspect_ratio > 2) settings.aspect_ratio = 0;
 #else
@@ -1124,9 +1126,6 @@ void save_config() {
         config_write(pathname);
     }
 }
-#if SOFTTV
-bool color_mode = true;
-#endif
 const MenuItem menu_items[] = {
         {"Swap AB <> BA: %s",     ARRAY, &settings.swap_ab,  nullptr, 1, {"NO ",       "YES"}},
         {},
@@ -1185,11 +1184,11 @@ const MenuItem menu_items[] = {
         { "Gray level: %s", ARRAY, &settings.gray_level, nullptr, 3, {"0", "1", "2", "3"} },
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
-        { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
+        { "Demo game time: %s", ARRAY, &settings.demo_duration, nullptr, 7, { "15 sec", "30 sec", "45 sec", "1 min ", "2 min ", "3 min ", "5 min ", "10 min" } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
-        { "Colors: %s", ARRAY, &color_mode, nullptr, 1, { "NO ", "YES" } },
+        { "Colors: %s", ARRAY, &settings.color_mode, nullptr, 1, { "NO ", "YES" } },
 #endif
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -1389,7 +1388,7 @@ void menu() {
 #endif
 #if SOFTTV
     tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
-    tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
+    tv_out_mode.color_index = settings.color_mode ? 1.0f : 0.0f;
 #endif
 #if HDMI || SOFTTV
     if (settings.aspect_ratio == 2) {
@@ -1546,7 +1545,7 @@ int __time_critical_func(main)() {
 
 #if SOFTTV
         tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
-        tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
+        tv_out_mode.color_index = settings.color_mode ? 1.0f : 0.0f;
 #endif
 #if HDMI || SOFTTV
         if (settings.aspect_ratio == 2) {
@@ -1627,8 +1626,8 @@ int __time_critical_func(main)() {
             }
 
             if (rom_loaded && demo_active) {
-                const uint8_t duration_index = demo_duration < count_of(demo_seconds)
-                                             ? demo_duration : 0;
+                const uint8_t duration_index = settings.demo_duration < count_of(demo_seconds)
+                                             ? settings.demo_duration : 0;
                 const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
                 if (time_us_64() - demo_game_started_at >= duration_us) {
                     demo_advance_pending = true;
