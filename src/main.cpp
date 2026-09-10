@@ -116,6 +116,8 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
 static volatile bool altPressed = false;
 static volatile bool ctrlPressed = false;
 static volatile uint8_t fxPressedV = 0;
+static volatile bool pageUpPressed = false;
+static volatile bool pageDownPressed = false;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -160,6 +162,10 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
 
     altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
     ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
+    if (isInReport(report, HID_KEY_PAGE_UP) && !isInReport(prev_report, HID_KEY_PAGE_UP))
+        pageUpPressed = true;
+    if (isInReport(report, HID_KEY_PAGE_DOWN) && !isInReport(prev_report, HID_KEY_PAGE_DOWN))
+        pageDownPressed = true;
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
         watchdog_enable(10, true);
@@ -545,19 +551,21 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
     constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
+    const auto show_load_error = [&](const char *message) {
+        draw_text(message, window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(demo_active ? 1500 : 5000);
+    };
 
     draw_window("Loading ROM", window_x, window_y, 43, 5);
 
     FILINFO fileinfo;
     if (FR_OK != f_stat(pathname, &fileinfo) || fileinfo.fsize == 0) {
-        draw_text("ERROR: ROM not found or empty!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
+        show_load_error("ERROR: ROM not found or empty!");
         return false;
     }
     const uint32_t load_size = fileinfo.fsize;
     if (16384 - 64 << 10 < fileinfo.fsize) {
-        draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
+        show_load_error("ERROR: ROM too large! Canceled!!");
         return false;
     }
 
@@ -571,8 +579,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     if (watara_psram_available() && watara_psram_size() != 0) {
         if (fileinfo.fsize > watara_psram_size()) {
-            draw_text("ERROR: ROM too large for PSRAM!", window_x + 1, window_y + 2, 13, 1);
-            sleep_ms(5000);
+            show_load_error("ERROR: ROM too large for PSRAM!");
             return false;
         }
 
@@ -594,6 +601,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
             auto flash_target_offset = FLASH_TARGET_OFFSET;
             static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
             FRESULT read_result;
+            bool flash_verify_failed = false;
 
             do {
                 memset(buffer, 0xff, sizeof(buffer));
@@ -608,6 +616,11 @@ bool filebrowser_loadfile(const char pathname[256]) {
                         flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
                         flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
                         restore_interrupts(ints);
+
+                        if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
+                            flash_verify_failed = true;
+                            break;
+                        }
                     }
 
                     gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
@@ -618,14 +631,18 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
             gpio_put(PICO_DEFAULT_LED_PIN, true);
             multicore_lockout_end_blocking();
-            load_ok = read_result == FR_OK && total_read == load_size;
+            load_ok = !flash_verify_failed && read_result == FR_OK && total_read == load_size;
             f_close(&file);
+
+            if (flash_verify_failed) {
+                show_load_error("ERROR: Flash verify failed!");
+                return false;
+            }
         }
     }
 
     if (!load_ok) {
-        draw_text("ERROR: ROM load failed!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
+        show_load_error("ERROR: ROM load failed!");
         return false;
     }
 
@@ -639,42 +656,53 @@ static bool demo_load_next_rom(const char *after_name) {
     if (FR_OK != f_mount(&fs, "SD", 1))
         return false;
 
-    DIR dir;
-    FILINFO info;
-    if (FR_OK != f_opendir(&dir, HOME_DIR))
-        return false;
-
-    char best[79] = { 0 };
-    while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
-        if (info.fattrib & AM_DIR)
-            continue;
-        if (!isExecutable(info.fname, "sv,bin"))
-            continue;
-        if (after_name && after_name[0] && strcmp(info.fname, after_name) <= 0)
-            continue;
-        if (!best[0] || strcmp(info.fname, best) < 0) {
-            strncpy(best, info.fname, sizeof(best) - 1);
-            best[sizeof(best) - 1] = '\0';
-        }
+    char after[79] = { 0 };
+    if (after_name && after_name[0]) {
+        strncpy(after, after_name, sizeof(after) - 1);
+        after[sizeof(after) - 1] = '\0';
     }
-    f_closedir(&dir);
 
-    if (!best[0])
-        return false;
+    while (true) {
+        DIR dir;
+        FILINFO info;
+        if (FR_OK != f_opendir(&dir, HOME_DIR))
+            return false;
 
-    char pathname[256];
-    snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
-    if (!filebrowser_loadfile(pathname))
-        return false;
+        char best[79] = { 0 };
+        while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
+            if (info.fattrib & AM_DIR)
+                continue;
+            if (!isExecutable(info.fname, "sv,bin"))
+                continue;
+            if (after[0] && strcmp(info.fname, after) <= 0)
+                continue;
+            if (!best[0] || strcmp(info.fname, best) < 0) {
+                strncpy(best, info.fname, sizeof(best) - 1);
+                best[sizeof(best) - 1] = '\0';
+            }
+        }
+        f_closedir(&dir);
 
-    strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
-    demo_current_name[sizeof(demo_current_name) - 1] = '\0';
-    demo_title_drawn = false;
+        if (!best[0])
+            return false;
+
+        char pathname[256];
+        snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
+        if (!filebrowser_loadfile(pathname)) {
+            strncpy(after, best, sizeof(after) - 1);
+            after[sizeof(after) - 1] = '\0';
+            continue;
+        }
+
+        strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
+        demo_current_name[sizeof(demo_current_name) - 1] = '\0';
+        demo_title_drawn = false;
 #if VGA || HDMI || SOFTTV
-    graphics_set_overlay(nullptr, false);
+        graphics_set_overlay(nullptr, false);
 #endif
-    demo_game_started_at = time_us_64();
-    return true;
+        demo_game_started_at = time_us_64();
+        return true;
+    }
 }
 
 bool filebrowser(const char pathname[256], const char executables[11]) {
@@ -814,6 +842,36 @@ bool filebrowser(const char pathname[256], const char executables[11]) {
                 else {
                     offset = 0;
                     current_item = 0;
+                }
+            }
+
+            constexpr int half_page = per_page / 2;
+            if (pageDownPressed) {
+                pageDownPressed = false;
+                int selected = offset + current_item;
+                selected += half_page;
+                if (selected >= total_files) selected = total_files - 1;
+
+                if (selected < offset + per_page) {
+                    current_item = selected - offset;
+                }
+                else {
+                    current_item = per_page - 1;
+                    offset = selected - current_item;
+                }
+            }
+            if (pageUpPressed) {
+                pageUpPressed = false;
+                int selected = offset + current_item;
+                selected -= half_page;
+                if (selected < 0) selected = 0;
+
+                if (selected >= offset) {
+                    current_item = selected - offset;
+                }
+                else {
+                    current_item = 0;
+                    offset = selected;
                 }
             }
 
