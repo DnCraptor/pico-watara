@@ -31,7 +31,7 @@ project(watara C CXX ASM)
 SET(BUILD_NAME "${PROJECT_NAME}")
 
 option(RELEASE_BUILD "Build release matrix without IDE-local forced options" OFF)
-option(I2S "Enable I2S sound" ON)
+option(I2S "Enable I2S sound" OFF)
 option(I2S_CS4334 "Enable I2S CS4334 sound" OFF)
 option(VGA "Enable VGA" OFF)
 option(TFT "Enable TFT display" OFF)

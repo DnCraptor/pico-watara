@@ -911,11 +911,17 @@ uint16_t frequencies[] = { 252, 362, 366, 378, 396, 404, 408, 412, 416, 420, 424
 #ifdef PICO_RP2040
     #ifdef CPU_FREQ
     uint8_t frequency_index = 0;
+    #elif HDMI
+    uint8_t frequency_index = 3;
     #else
     uint8_t frequency_index = 2;
     #endif
 #else
-uint8_t frequency_index = 2;
+    #if HDMI
+    uint8_t frequency_index = 3;
+    #else
+    uint8_t frequency_index = 2;
+    #endif
 #endif
 
 #ifndef PICO_RP2040
