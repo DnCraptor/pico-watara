@@ -1,280 +1,117 @@
-# Watara Supervision Emulator 2.1.6
+# Watara Supervision Emulator 2.1.7
 
-This release substantially updates the Watara Supervision emulator for the MURMULATOR family and other supported RP2040/RP2350 boards.
+Version 2.1.7 is a maintenance release focused on MURMULATOR 2 audio/PSRAM correctness, persistent Demo/TV-SOFT settings, safer Flash ROM loading, Demo-mode recovery, file-browser navigation, and cleaner HDMI clocking.
 
-The main focus of 2.1.6 is improved display output, RP2350/QSPI PSRAM support, more robust ROM loading and Flash handling, improved audio behaviour, Demo mode, and a unified release configuration for both RP2040 and RP2350 targets.
+## MURMULATOR 2 PWM / PSRAM fix
 
-## Supported platforms
+PWM stereo on MURMULATOR 2 now starts at GP10, using GP10/GP11 as the stereo pair.
 
-Release builds are provided for both Raspberry Pi microcontroller generations:
+The previous PWM base pin was GP9; the PWM driver derives an even/odd pair from the base pin, which caused GP8/GP9 to be configured for PWM. On RP2350A-based MURMULATOR 2 boards GP8 is the QSPI PSRAM CS1 pin, so enabling PWM could interfere with PSRAM access.
 
-- RP2040
-- RP2350 / Pico 2
+The audio default configuration now uses `AUDIO_PWM_PIN` and `AUDIO_PWM_PIN + 1` when PWM output is selected, while I2S keeps the normal `AUDIO_DATA_PIN` / `AUDIO_CLOCK_PIN` routing.
 
-Supported boards:
+## Persistent settings format v3
 
-- MURMULATOR 1.x
-- MURMULATOR 2.0
-- Olimex RP2040-PICO-PC
-- Waveshare RP2040-PiZero on RP2040 builds
-- Waveshare RP2350-PiZero on RP2350 builds
+The settings structure is updated from version 2 to version 3.
 
-## Video output
+The following settings are now persistent:
 
-The release supports three video backends:
+- Demo game duration
+- TV-SOFT `Colors` mode
 
-- VGA
-- HDMI
-- TV-SOFT composite video
+Configuration loading remains strict: only the current structure size and version 3 are accepted. Older configuration files are not interpreted as version 3 settings.
 
-Display modes have been made consistent between the supported outputs while retaining the Watara-specific bezel.
+Configuration writes now also check the result of `f_close()`, so a settings save is considered successful only when the full settings block was written and the file closed successfully.
 
-Available modes include:
+## Expanded Demo durations
 
-- Native — original 160×160 Supervision image
-- Bezel — 160×160 image inside the Watara console bezel
-- 4:3 fullscreen — available on HDMI and TV-SOFT
+Demo mode now offers:
 
-### HDMI
-
-HDMI rendering has been updated and stabilized for both RP2040 and RP2350.
-
-Native, Bezel and 4:3 modes are supported. The renderer uses the same behaviour on both MCU generations.
-
-### VGA
-
-VGA supports Native and Bezel display modes.
-
-Optional Gray lines are available to reproduce a more LCD-like appearance:
-
-- No
-- Vertical
-- Horizontal
-- Both
-
-Gray-line intensity can also be adjusted.
-
-### TV-SOFT
-
-The software composite-video backend has received substantial timing and rendering updates.
-
-Improvements include:
-
-- PAL and NTSC operation
-- corrected carrier and scanline timing
-- improved colour generation
-- corrected text-mode rendering
-- 53-column text mode
-- phase-continuous colour rendering
-- Native, Bezel and 4:3 display modes
-
-Gray lines are intentionally not used with TV-SOFT because analogue resampling and chroma encoding do not preserve the regular LCD-line pattern reliably.
-
-## Demo mode
-
-A new Demo mode automatically cycles through cartridges stored in `/WATARA`.
-
-Available game durations:
-
+- 15 seconds
 - 30 seconds
 - 45 seconds
 - 1 minute
+- 2 minutes
 - 3 minutes
 - 5 minutes
 - 10 minutes
 
-Demo mode can be started from the emulator menu or directly from the ROM browser.
+The default index is the first entry, so a fresh version-3 configuration uses 15 seconds.
 
-While a game is running in Demo mode, the cartridge name is displayed along the bottom of the screen.
+## Demo-mode load recovery
 
-At the end of the selected interval, the emulator automatically resets the current game and starts the next cartridge.
+ROM-load errors are now handled explicitly during Demo mode.
 
-## QSPI PSRAM support
+If a cartridge cannot be loaded, the error message is shown briefly and Demo mode continues with the next cartridge instead of stopping at the first failed entry.
 
-RP2350 builds can use external QSPI PSRAM when supported by the board.
+The loader reports failures for:
 
-Up to 16 MiB of PSRAM can be detected and used for cartridge storage.
+- missing or empty ROM files
+- ROMs too large for the configured storage path
+- incomplete ROM reads
+- Flash verification failures
 
-When PSRAM is available, cartridges can be loaded directly into PSRAM instead of rewriting the internal Flash.
+Normal/manual load errors remain visible longer; Demo-mode errors use a shorter delay so automatic playback can continue.
 
-The ROM browser indicates whether the selected storage path is using PSRAM or Flash.
+## Flash verification
 
-If PSRAM is unavailable, the emulator automatically falls back to Flash storage.
+When Flash storage is used, sectors are still compared before erase/program operations so unchanged sectors are skipped.
 
-## Improved Flash handling
+After a changed sector is programmed, its contents are compared with the source buffer. A verification mismatch marks the ROM load as failed and displays `ERROR: Flash verify failed!` instead of accepting the cartridge as successfully loaded.
 
-Flash cartridge updates now compare existing Flash sectors against the new cartridge data.
+## Demo state no longer remains latched in the file browser
 
-A sector is erased and programmed only when its contents actually differ.
-
-This reduces:
-
-- unnecessary Flash erase/program cycles
-- cartridge loading time when data is already present
-- Flash wear
-
-ROM loading is also validated: a cartridge is considered loaded only after the complete expected data has actually been read.
-
-## Improved shell and ROM browser behaviour
-
-The emulator shell no longer assumes that a valid cartridge must already be loaded.
-
-The ROM browser and configuration menu remain usable without a ROM, while execution of the emulated Watara machine is blocked until a cartridge has been successfully loaded.
-
-This also prevents stale or invalid ROM/PSRAM contents from being executed.
-
-Transitions between the browser, menu, Demo mode and emulation now clear only the active 160×160 LCD area. The Watara bezel remains intact instead of flashing during transitions.
-
-## Audio improvements
-
-Release builds provide:
-
-- PWM audio
-- I2S audio
-
-I2S output now uses HOLD-last-sample underrun handling to make timing interruptions less audible.
-
-Audio output is explicitly paused during operations such as:
-
-- ROM browser transitions
-- menu entry
-- cartridge changes
-- Flash programming
-
-For I2S, the output clocks remain running while a silent HOLD sample is supplied. PWM output is returned to its neutral level.
-
-This reduces clicks and unwanted audio during cartridge and UI transitions.
-
-## Persistent configuration
-
-Configuration files are now separated by hardware platform and video backend:
+Entering the ROM browser now clears:
 
 ```text
-/.config/watara/<platform>/<video>/emulator.cfg
+demo_active
+demo_requested
+demo_advance_pending
 ```
 
-Platform identifiers include:
+The same state is cleared on the generic path that returns from emulation to the browser.
 
-```text
-m1p1
-m2p1
-pcp1
-z0p1
+Normal automatic Demo cartridge-to-cartridge transitions still bypass the browser and continue directly, so this change prevents stale Demo state without breaking the normal Demo sequence.
 
-m1p2
-m2p2
-pcp2
-z0p2
-```
+## File-browser PageUp / PageDown
 
-Video identifiers are:
+USB keyboard navigation now supports `PageUp` and `PageDown`.
 
-```text
-vga
-hdmi
-softtv
-```
+Each key press moves the selected item by half of the visible page. The cursor moves first; the list viewport scrolls only when the new selected item would otherwise be outside the visible area.
 
-The current settings format is version 2.
+## HDMI default clock
 
-Old configuration formats and the former `/WATARA/emulator.cfg` location are no longer used.
+HDMI builds now default to 378 MHz instead of 366 MHz.
 
-PAL/NTSC selection is persistent.
-
-## SD card layout
-
-Cartridges remain under:
-
-```text
-/WATARA/
-```
-
-Save-state files also remain persistent user data under `/WATARA`.
-
-Configuration is stored separately under:
-
-```text
-/.config/watara/
-```
-
-Temporary filesystem objects, when required, use:
-
-```text
-/tmp/
-```
-
-## Performance and clocking
-
-The normal default clock is now 366 MHz on both RP2040 and RP2350 builds.
-
-This frequency was selected because video output proved more stable than at the previous 378 MHz default.
-
-The existing special RP2040 `CPU_FREQ` configuration remains unchanged.
+With the HDMI PIO target clock at 252 MHz, 378 MHz gives an exact 1.5 clock divider. VGA and TV-SOFT builds keep the 366 MHz default. The existing RP2040 `CPU_FREQ` override path is unchanged.
 
 ## Release build matrix
 
-The release matrix contains:
+The standard release matrix remains unchanged:
 
-- 2 MCU platforms
-- 4 board targets per platform
-- 3 video outputs
-- 2 audio outputs
+- RP2040 and RP2350
+- MURMULATOR 1.x
+- MURMULATOR 2.0
+- Olimex RP2040-PICO-PC
+- Waveshare PiZero targets
+- VGA, HDMI and TV-SOFT
+- PWM and I2S audio
 
-This produces **48 firmware configurations**.
-
-Video variants:
-
-```text
-VGA
-HDMI
-TV-SOFT
-```
-
-Audio variants:
-
-```text
-PWM
-I2S
-```
-
-I2S-CS4334, TFT/ILI9341, the legacy TV backend and m1p2launcher are not part of the standard 2.1.6 release matrix.
+This produces 48 standard firmware variants.
 
 ## Firmware naming
 
 Examples:
 
 ```text
-m1p1-watara-VGA-PWM-2.1.6.uf2
-m2p1-watara-HDMI-I2S-2.1.6.uf2
-PCp2-watara-VGA-PWM-2.1.6.uf2
-z0p2-watara-TV-SOFT-I2S-2.1.6.uf2
+m1p1-watara-VGA-PWM-2.1.7.uf2
+m2p1-watara-HDMI-I2S-2.1.7.uf2
+PCp2-watara-VGA-PWM-2.1.7.uf2
+z0p2-watara-TV-SOFT-I2S-2.1.7.uf2
 ```
 
-Platform suffix:
+## Upgrade notes
 
-- `p1` — RP2040
-- `p2` — RP2350
+Because the settings structure is now version 3, existing version-2 configuration files are not loaded as current settings. A new configuration will use the current defaults until settings are saved again.
 
-Board prefix:
-
-- `m1` — MURMULATOR 1.x
-- `m2` — MURMULATOR 2.0
-- `PC` — Olimex RP2040-PICO-PC family
-- `z0` — Waveshare PiZero family
-
-Video suffix:
-
-- `VGA` — VGA output
-- `HDMI` — HDMI output
-- `TV-SOFT` — software composite output
-
-Audio suffix:
-
-- `PWM` — PWM audio
-- `I2S` — standard I2S audio
-
-## Summary
-
-Version 2.1.6 brings the Watara Supervision emulator substantially closer to the current MURMULATOR emulator infrastructure while retaining Watara-specific display and emulation behaviour.
-
-The most significant additions are QSPI PSRAM cartridge loading, selective Flash programming, improved PAL/NTSC composite output, Demo mode, unified display modes, improved audio transition handling, robust ROM-loading state management, per-platform configuration storage, and a unified RP2040/RP2350 release matrix.
+For MURMULATOR 2 users, the GP10/GP11 PWM routing is an important hardware-facing fix, especially on RP2350A boards where GP8 is used for QSPI PSRAM CS1.

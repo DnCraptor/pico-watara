@@ -66,7 +66,7 @@ Video names are `vga`, `hdmi` and `softtv`.
 
 On RP2350 boards with supported QSPI PSRAM, ROMs are loaded directly into PSRAM. The file browser shows `PSRAM` when this path is active.
 
-When PSRAM is unavailable, ROMs use the flash storage area. Flash programming compares sectors first and erases/programs only sectors that actually changed. The file browser shows `FLASH` for this path.
+When PSRAM is unavailable, ROMs use the flash storage area. Flash programming compares sectors first and erases/programs only sectors that actually changed. Programmed sectors are verified after writing; a failed load is reported instead of being treated as a valid cartridge. The file browser shows `FLASH` for this path.
 
 ## Display modes
 
@@ -87,26 +87,44 @@ VGA also supports vertical/horizontal gray-line simulation with configurable int
 
 ## TV-SOFT
 
-TV-SOFT supports PAL and NTSC with persistent TV-system selection. The software composite renderer includes the corrected text-mode width and color/phase handling used by the current menu/file-browser UI.
+TV-SOFT supports PAL and NTSC with persistent TV-system selection. The `Colors` setting is also persistent. The software composite renderer includes the corrected text-mode width and color/phase handling used by the current menu/file-browser UI.
 
 ## Demo mode
 
 Demo mode automatically walks through cartridges in `/WATARA` in alphabetical order.
 
-It can be started either from the file browser with `B` or from the emulator menu. Available per-game durations are:
+It can be started either from the file browser with `B` or from the emulator menu. The selected duration is persistent. Available per-game durations are:
 
+- 15 seconds
 - 30 seconds
 - 45 seconds
 - 1 minute
+- 2 minutes
 - 3 minutes
 - 5 minutes
 - 10 minutes
 
-The active cartridge name is shown along the bottom of the output while Demo mode is running.
+The active cartridge name is shown along the bottom of the output while Demo mode is running. If a cartridge cannot be loaded, Demo mode briefly shows the load error, skips that cartridge and continues with the next one. Entering the file browser clears the active Demo state so Demo cannot remain latched after an unrelated exit from emulation.
+
+## File browser navigation
+
+In addition to the existing directional controls, USB keyboards can use `PageUp` and `PageDown` to move the selection by half a visible page. The viewport scrolls only when the new selection would move outside the currently visible list.
 
 ## Save states
 
 The emulator supports multiple save-state slots from the menu. Save-state files remain persistent user data under `/WATARA`.
+
+## Configuration format
+
+The current settings format is version 3. Version 3 stores Demo duration and the TV-SOFT `Colors` option in addition to the previously persistent settings. Configuration reads are strict: older settings structures are not accepted as the current format. Configuration writes are considered successful only if the complete settings block is written and the file closes successfully.
+
+## Clocking
+
+The normal default system clock is 366 MHz for VGA and TV-SOFT builds. HDMI builds use 378 MHz, which gives an exact 1.5 divider for the 252 MHz HDMI PIO clock. The special RP2040 `CPU_FREQ` build path remains unchanged.
+
+## MURMULATOR 2 audio
+
+For MURMULATOR 2, PWM stereo uses GP10/GP11. This avoids GP8, which is used as the RP2350A QSPI PSRAM CS1 pin. The audio default configuration now derives the PWM data/clock pair from `AUDIO_PWM_PIN` when PWM output is selected.
 
 ## Building
 
@@ -155,10 +173,10 @@ Audio suffix:
 Example names:
 
 ```text
-m1p1-watara-VGA-PWM-2.1.6.uf2
-z0p1-watara-TV-SOFT-I2S-2.1.6.uf2
-m2p2-watara-HDMI-I2S-2.1.6.uf2
-PCp2-watara-VGA-PWM-2.1.6.uf2
+m1p1-watara-VGA-PWM-2.1.7.uf2
+z0p1-watara-TV-SOFT-I2S-2.1.7.uf2
+m2p2-watara-HDMI-I2S-2.1.7.uf2
+PCp2-watara-VGA-PWM-2.1.7.uf2
 ```
 
 ## Credits
