@@ -1582,7 +1582,12 @@ int __time_critical_func(main)() {
         if (need_browser) {
             i2s_pause(&i2s_config);
             graphics_set_mode(TEXTMODE_DEFAULT);
+            // The file browser is always a manual/non-demo state.  Keep all
+            // demo flags clear while it owns the UI so Demo cannot survive
+            // an unrelated exit from the emulator loop.
+            demo_active = false;
             demo_requested = false;
+            demo_advance_pending = false;
             const bool rom_selected = filebrowser(HOME_DIR, "sv,bin");
 
             if (demo_requested) {
@@ -1749,6 +1754,12 @@ int __time_critical_func(main)() {
             demo_active = false;
         }
 
+        // Reaching the browser is not a normal Demo ROM-to-ROM transition:
+        // those paths continue above.  Drop every Demo state bit before the
+        // next browser iteration.
+        demo_active = false;
+        demo_requested = false;
+        demo_advance_pending = false;
         need_browser = true;
     }
     __unreachable();
