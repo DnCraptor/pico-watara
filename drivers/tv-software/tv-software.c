@@ -230,9 +230,11 @@ void tv_render_text_scanline(uint8_t* output_buffer8, int out_width, int li,
 
     uint8_t glyph_row = TV_FONT_6X8[cell[0] * 8 + glyph_y];
     uint8_t colorIndex = cell[1];
-    uint8_t palette_index = TV_TEXTMODE_PALETTE[(glyph_row & 1)
-                                                 ? (colorIndex & 0xf)
-                                                 : (colorIndex >> 4)];
+    const bool preview = cell[0] == 0 && colorIndex >= 0xF0 && colorIndex <= 0xF3;
+    uint8_t palette_index = preview ? (31 + ((colorIndex & 3) << 5))
+                                    : TV_TEXTMODE_PALETTE[(glyph_row & 1)
+                                                         ? (colorIndex & 0xf)
+                                                         : (colorIndex >> 4)];
     uint32_t cout32 = conv_color[li][palette_index];
     uint8_t* c_4 = (uint8_t*)&cout32;
 
@@ -253,9 +255,11 @@ void tv_render_text_scanline(uint8_t* output_buffer8, int out_width, int li,
                 colorIndex = cell[1];
             }
 
-            palette_index = TV_TEXTMODE_PALETTE[((glyph_row >> glyph_x) & 1)
-                                                 ? (colorIndex & 0xf)
-                                                 : (colorIndex >> 4)];
+            const bool cell_preview = cell[0] == 0 && colorIndex >= 0xF0 && colorIndex <= 0xF3;
+            palette_index = cell_preview ? (31 + ((colorIndex & 3) << 5))
+                                         : TV_TEXTMODE_PALETTE[((glyph_row >> glyph_x) & 1)
+                                                              ? (colorIndex & 0xf)
+                                                              : (colorIndex >> 4)];
             cout32 = conv_color[li][palette_index];
             c_4 = (uint8_t*)&cout32;
         }

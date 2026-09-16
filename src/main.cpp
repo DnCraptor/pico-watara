@@ -48,7 +48,7 @@ uint8_t SCREEN[200][240];
 uint8_t TEXT_BUFFER[TEXTMODE_COLS*TEXTMODE_ROWS*2];
 
 SETTINGS settings = {
-    .version = 3,
+    .version = 4,
     .swap_ab = false,
     .aspect_ratio = false,
     .ghosting = 4,
@@ -63,13 +63,66 @@ SETTINGS settings = {
     .gray_lines = 0,
     .gray_level = 1,
     .demo_duration = 0,
-    .color_mode = true
+    .color_mode = true,
+    .preset_rgb0 = 0,
+    .preset_rgb1 = 0,
+    .preset_rgb2 = 0,
+    .preset_rgb3 = 0
 };
 
 uint32_t rgb0;
 uint32_t rgb1;
 uint32_t rgb2;
 uint32_t rgb3;
+
+static const uint32_t preset_rgb0[] = {
+    0xD4FFFD, 0xD4FFF3, 0xFFE9FA, 0xE9E9FF, 0xE9FAFF, 0xE9FFF4,
+    0xF5FFE9, 0xFFF8E9, 0xFFEBE9, 0xD4FFDA, 0xEDFFD4
+};
+// Spreadsheet columns B..G are Cold; H..I are Warm. Empty cells are omitted.
+static const uint32_t preset_rgb1_cold[] = {
+    0x139566, 0x349BC0, 0x009999, 0x7296B6, 0xC0CBD5, 0xC3D5B5
+};
+static const uint32_t preset_rgb1_warm[] = { 0xE8AE74, 0xC57CDA };
+static const uint32_t preset_rgb2_cold[] = { 0x106F4C, 0x1C5165, 0x006565, 0x496074 };
+static const uint32_t preset_rgb2_warm[] = { 0xF79036, 0xBD5F00, 0xD58B41, 0xD8C835, 0xE98EA8 };
+static const uint32_t preset_rgb3[] = {
+    0x6C6800, 0x6B0400, 0x366C00, 0x006C48, 0x00686C, 0x00326C,
+    0x04006C, 0x44006C, 0x6C0044, 0x6C0004, 0x000000
+};
+static constexpr uint8_t PRESET_RGB1_COLD_COUNT = count_of(preset_rgb1_cold);
+static constexpr uint8_t PRESET_RGB1_COUNT = count_of(preset_rgb1_cold) + count_of(preset_rgb1_warm);
+static constexpr uint8_t PRESET_RGB2_COLD_COUNT = count_of(preset_rgb2_cold);
+static constexpr uint8_t PRESET_RGB2_COUNT = count_of(preset_rgb2_cold) + count_of(preset_rgb2_warm);
+static constexpr uint8_t PALETTE_CUSTOM = SV_COLOR_SCHEME_COUNT;
+static constexpr uint8_t PALETTE_CUSTOM_PRESET = SV_COLOR_SCHEME_COUNT + 1;
+static constexpr uint8_t PALETTE_CUSTOM_RANDOM = SV_COLOR_SCHEME_COUNT + 2;
+
+static uint32_t preset_rgb1_at(uint8_t i) {
+    return i < PRESET_RGB1_COLD_COUNT ? preset_rgb1_cold[i] : preset_rgb1_warm[i - PRESET_RGB1_COLD_COUNT];
+}
+static uint32_t preset_rgb2_at(uint8_t i) {
+    return i < PRESET_RGB2_COLD_COUNT ? preset_rgb2_cold[i] : preset_rgb2_warm[i - PRESET_RGB2_COLD_COUNT];
+}
+
+static uint32_t palette_random_state = 0x6D2B79F5u;
+static uint32_t palette_random_next() {
+    uint32_t x = palette_random_state;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return palette_random_state = x;
+}
+static void randomize_custom_palette() {
+    palette_random_state ^= (uint32_t)time_us_64() ^ (uint32_t)(time_us_64() >> 32);
+    rgb0 = preset_rgb0[palette_random_next() % count_of(preset_rgb0)];
+    // Choose RGB1 uniformly first; RGB2 must come from the same Cold/Warm group.
+    const uint8_t i1 = palette_random_next() % PRESET_RGB1_COUNT;
+    rgb1 = preset_rgb1_at(i1);
+    if (i1 < PRESET_RGB1_COLD_COUNT)
+        rgb2 = preset_rgb2_cold[palette_random_next() % count_of(preset_rgb2_cold)];
+    else
+        rgb2 = preset_rgb2_warm[palette_random_next() % count_of(preset_rgb2_warm)];
+    rgb3 = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
+}
 
 volatile uint8_t watara_gray_lines = 0;
 volatile uint8_t watara_gray_level = 1;
@@ -410,12 +463,17 @@ static inline uint32_t fast1of32(uint32_t v, int i) {
 }
 
 static inline void update_palette() {
-    if (SV_COLOR_SCHEME_COUNT <= settings.palette) {
+    if (settings.palette == PALETTE_CUSTOM) {
         rgb0 = settings.rgb0;
         rgb1 = settings.rgb1;
         rgb2 = settings.rgb2;
         rgb3 = settings.rgb3;
-    } else {
+    } else if (settings.palette == PALETTE_CUSTOM_PRESET) {
+        rgb0 = preset_rgb0[settings.preset_rgb0];
+        rgb1 = preset_rgb1_at(settings.preset_rgb1);
+        rgb2 = preset_rgb2_at(settings.preset_rgb2);
+        rgb3 = preset_rgb3[settings.preset_rgb3];
+    } else if (settings.palette != PALETTE_CUSTOM_RANDOM) {
         const uint8_t* palette = palettes[settings.palette];
         rgb0 = RGB888(palette[0], palette[1], palette[2]);
         rgb1 = RGB888(palette[3], palette[4], palette[5]);
@@ -545,6 +603,60 @@ bool isExecutable(const char pathname[255],const char *extensions) {
     return false;
 }
 
+static bool game_palette_linked = false;
+
+static void game_palette_ini_path(char *path, size_t size) {
+    char base[128];
+    strncpy(base, filename, sizeof(base) - 1);
+    base[sizeof(base) - 1] = '\0';
+    char *dot = strrchr(base, '.');
+    if (dot) *dot = '\0';
+    snprintf(path, size, "/.config/watara/%s.ini", base);
+}
+
+static bool game_palette_exists() {
+    if (!rom_size || !filename[0]) return false;
+    char path[256]; game_palette_ini_path(path, sizeof(path));
+    FILINFO info; return f_stat(path, &info) == FR_OK;
+}
+
+static bool game_palette_read() {
+    if (!rom_size || !filename[0]) return false;
+    char path[256];
+    game_palette_ini_path(path, sizeof(path));
+    FIL f;
+    if (FR_OK != f_open(&f, path, FA_READ)) return false;
+    char buf[160] = {0}; UINT n = 0;
+    FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &n);
+    f_close(&f);
+    if (fr != FR_OK) return false;
+    unsigned a,b,c,d;
+    if (4 != sscanf(buf, "[palette]\nrgb0=%x\nrgb1=%x\nrgb2=%x\nrgb3=%x", &a,&b,&c,&d)) return false;
+    if (a > 0xFFFFFF || b > 0xFFFFFF || c > 0xFFFFFF || d > 0xFFFFFF) return false;
+    rgb0=a; rgb1=b; rgb2=c; rgb3=d;
+    settings.rgb0=rgb0; settings.rgb1=rgb1; settings.rgb2=rgb2; settings.rgb3=rgb3;
+    settings.palette=PALETTE_CUSTOM;
+    return true;
+}
+
+static bool game_palette_write() {
+    if (!rom_size || !filename[0]) return false;
+    f_mkdir("/.config"); f_mkdir("/.config/watara");
+    char path[256]; game_palette_ini_path(path, sizeof(path));
+    char buf[160];
+    int len=snprintf(buf,sizeof(buf),"[palette]\nrgb0=%06lX\nrgb1=%06lX\nrgb2=%06lX\nrgb3=%06lX\n",
+        (unsigned long)rgb0,(unsigned long)rgb1,(unsigned long)rgb2,(unsigned long)rgb3);
+    FIL f; if (FR_OK != f_open(&f,path,FA_CREATE_ALWAYS|FA_WRITE)) return false;
+    UINT n=0; FRESULT fr=f_write(&f,buf,len,&n); FRESULT cr=f_close(&f);
+    return fr==FR_OK && n==(UINT)len && cr==FR_OK;
+}
+
+static bool game_palette_unlink() {
+    if (!rom_size || !filename[0]) return false;
+    char path[256]; game_palette_ini_path(path,sizeof(path));
+    FRESULT fr=f_unlink(path); return fr==FR_OK || fr==FR_NO_FILE;
+}
+
 bool filebrowser_loadfile(const char pathname[256]) {
     UINT bytes_read = 0;
     FIL file;
@@ -648,6 +760,12 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     rom_size = load_size;
     strcpy(filename, fileinfo.fname);
+    game_palette_linked = game_palette_exists();
+    if (settings.palette == PALETTE_CUSTOM_RANDOM) {
+        randomize_custom_palette();
+    } else if (game_palette_linked) {
+        game_palette_linked = game_palette_read();
+    }
 
     return true;
 }
@@ -951,6 +1069,7 @@ enum menu_type_e {
     LOAD,
     START_DEMO,
     ROM_SELECT,
+    GAME_PALETTE_LINK,
     RETURN,
 };
 
@@ -1124,7 +1243,7 @@ static bool config_read(const char* pathname) {
     const FRESULT fr = f_read(&file, &loaded, sizeof(loaded), &bytes_read);
     f_close(&file);
 
-    if (FR_OK != fr || bytes_read != sizeof(loaded) || loaded.version != 3) {
+    if (FR_OK != fr || bytes_read != sizeof(loaded) || loaded.version != 4) {
         return false;
     }
 
@@ -1155,6 +1274,11 @@ void load_config() {
     rgb1 = settings.rgb1;
     rgb2 = settings.rgb2;
     rgb3 = settings.rgb3;
+    if (settings.palette > PALETTE_CUSTOM_RANDOM) settings.palette = SV_COLOR_SCHEME_WATAROO;
+    if (settings.preset_rgb0 >= count_of(preset_rgb0)) settings.preset_rgb0 = 0;
+    if (settings.preset_rgb1 >= PRESET_RGB1_COUNT) settings.preset_rgb1 = 0;
+    if (settings.preset_rgb2 >= PRESET_RGB2_COUNT) settings.preset_rgb2 = 0;
+    if (settings.preset_rgb3 >= count_of(preset_rgb3)) settings.preset_rgb3 = 0;
     if (settings.ghosting > 6) settings.ghosting = 4;
     if (settings.tv_system > 1) settings.tv_system = 0;
     if (settings.demo_duration >= count_of(demo_seconds)) settings.demo_duration = 0;
@@ -1194,7 +1318,7 @@ const MenuItem menu_items[] = {
         {"Swap AB <> BA: %s",     ARRAY, &settings.swap_ab,  nullptr, 1, {"NO ",       "YES"}},
         {},
         { "Ghosting pix: %i ", INT, &settings.ghosting, nullptr, 5 },
-        { "Palette: %s ", ARRAY, &settings.palette, nullptr, SV_COLOR_SCHEME_COUNT, {
+        { "Palette: %s ", ARRAY, &settings.palette, nullptr, PALETTE_CUSTOM_RANDOM, {
                   "DEFAULT          " // 0
                 , "WATAROO          " // 1
                 , "BGB              " // 2
@@ -1230,7 +1354,10 @@ const MenuItem menu_items[] = {
                 , "VIRTUAL_BOY      "
                 , "TV-LINK          "
                 , "CUSTOM           "
+                , "CUSTOM PRESET    "
+                , "CUSTOM RANDOM    "
          }},
+        { "Save for this game", GAME_PALETTE_LINK },
         { "RGB0: %06Xh ", HEX, &rgb0, nullptr, 0xFFFFFF },
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
@@ -1314,7 +1441,18 @@ void menu() {
             if (i == current_item) {
                 switch (item->type) {
                     case HEX:
-                        if (item->max_value != 0 && SV_COLOR_SCHEME_COUNT <= settings.palette) {
+                        if (settings.palette == PALETTE_CUSTOM_PRESET) {
+                            uint8_t *idx = nullptr; uint8_t max = 0;
+                            if (item->value == &rgb0) { idx=&settings.preset_rgb0; max=count_of(preset_rgb0); }
+                            else if (item->value == &rgb1) { idx=&settings.preset_rgb1; max=PRESET_RGB1_COUNT; }
+                            else if (item->value == &rgb2) { idx=&settings.preset_rgb2; max=PRESET_RGB2_COUNT; }
+                            else if (item->value == &rgb3) { idx=&settings.preset_rgb3; max=count_of(preset_rgb3); }
+                            if (idx) {
+                                if (gamepad1.bits.right) *idx = (*idx + 1) % max;
+                                if (gamepad1.bits.left) *idx = (*idx + max - 1) % max;
+                                update_palette();
+                            }
+                        } else if (item->max_value != 0 && settings.palette == PALETTE_CUSTOM) {
                             uint32_t* value = (uint32_t *)item->value;
                             if (h_code >= 0) {
                                 if (hex_digit < 0) hex_digit = 0;
@@ -1362,11 +1500,16 @@ void menu() {
                     case ARRAY:
                         if (item->max_value != 0) {
                             auto* value = (uint8_t *)item->value;
-                            if (gamepad1.bits.right && *value < item->max_value) {
-                                (*value)++;
-                            }
-                            if (gamepad1.bits.left && *value > 0) {
-                                (*value)--;
+                            if (gamepad1.bits.right && *value < item->max_value) (*value)++;
+                            if (gamepad1.bits.left && *value > 0) (*value)--;
+                        }
+                        break;
+                    case GAME_PALETTE_LINK:
+                        if (gamepad1.bits.start && rom_size) {
+                            if (game_palette_linked) {
+                                if (game_palette_unlink()) game_palette_linked = false;
+                            } else {
+                                if (game_palette_write()) game_palette_linked = true;
                             }
                         }
                         break;
@@ -1397,12 +1540,24 @@ void menu() {
                 }
             }
             if (pal != settings.palette) {
+                if (settings.palette == PALETTE_CUSTOM_RANDOM) randomize_custom_palette();
                 update_palette();
             }
             static char result[TEXTMODE_COLS];
             switch (item->type) {
                 case HEX:
-                    snprintf(result, TEXTMODE_COLS, item->text, *(uint32_t*)item->value);
+                    if (settings.palette == PALETTE_CUSTOM_PRESET) {
+                        uint8_t idx = 0, total = 1;
+                        if (item->value == &rgb0) { idx=settings.preset_rgb0; total=count_of(preset_rgb0); }
+                        else if (item->value == &rgb1) { idx=settings.preset_rgb1; total=PRESET_RGB1_COUNT; }
+                        else if (item->value == &rgb2) { idx=settings.preset_rgb2; total=PRESET_RGB2_COUNT; }
+                        else if (item->value == &rgb3) { idx=settings.preset_rgb3; total=count_of(preset_rgb3); }
+                        snprintf(result, TEXTMODE_COLS, "RGB%d: <%06lXh> %u/%u",
+                                 item->value == &rgb0 ? 0 : item->value == &rgb1 ? 1 : item->value == &rgb2 ? 2 : 3,
+                                 (unsigned long)*(uint32_t*)item->value, idx + 1, total);
+                    } else {
+                        snprintf(result, TEXTMODE_COLS, item->text, *(uint32_t*)item->value);
+                    }
                     if (i == current_item && hex_digit >= 0 && hex_digit < 6) {
                         hex_edit_mode = true;
                         if (blink) {
@@ -1419,12 +1574,22 @@ void menu() {
                 case TEXT:
                     snprintf(result, TEXTMODE_COLS, item->text, item->value);
                     break;
+                case GAME_PALETTE_LINK:
+                    if (!rom_size) snprintf(result, TEXTMODE_COLS, "Save for this game [N/A]");
+                    else snprintf(result, TEXTMODE_COLS, "%s", game_palette_linked ? "Unlink game ini file" : "Save for this game");
+                    break;
                 case NONE:
                     color = 6;
                 default:
                     snprintf(result, TEXTMODE_COLS, "%s", item->text);
             }
             draw_text(result, x, y, color, bg_color);
+            if (item->type == ARRAY && item->value == &settings.palette) {
+                for (uint8_t p = 0; p < 4; ++p) draw_palette_preview(TEXTMODE_COLS - 8 + p * 2, y, p, 2);
+            } else if (item->type == HEX) {
+                uint8_t p = item->value == &rgb0 ? 0 : item->value == &rgb1 ? 1 : item->value == &rgb2 ? 2 : 3;
+                draw_palette_preview(TEXTMODE_COLS - 3, y, p, 3);
+            }
         }
 
         if (gamepad1.bits.b || (gamepad1.bits.select && !gamepad1.bits.start))
@@ -1478,7 +1643,7 @@ void menu() {
 #endif
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
     }
-    if (count_of(palettes) <= settings.palette) {
+    if (settings.palette == PALETTE_CUSTOM) {
         settings.rgb0 = rgb0;
         settings.rgb1 = rgb1;
         settings.rgb2 = rgb2;
