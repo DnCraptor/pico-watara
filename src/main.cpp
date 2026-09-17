@@ -76,15 +76,15 @@ uint32_t rgb2;
 uint32_t rgb3;
 
 static const uint32_t preset_rgb0[] = {
-    0xD4FFFD, 0xD4FFF3, 0xFFE9FA, 0xE9E9FF, 0xE9FAFF, 0xE9FFF4,
-    0xF5FFE9, 0xFFF8E9, 0xFFEBE9, 0xD4FFDA, 0xEDFFD4
+    0xD4FFFD, 0xD4FFF3, 0xFFF2FC, 0xE9E9FF, 0xE9FAFF, 0xE9FFF4,
+    0xF5FFE9, 0xFFF8E9, 0xFFF1F0, 0xD4FFDA, 0xEDFFD4
 };
-// Spreadsheet columns B..G are Cold; H..I are Warm. Empty cells are omitted.
+// Spreadsheet columns B..G are Cold; H..L are Warm.
 static const uint32_t preset_rgb1_cold[] = {
     0x139566, 0x349BC0, 0x009999, 0x7296B6, 0xC0CBD5, 0xC3D5B5
 };
-static const uint32_t preset_rgb1_warm[] = { 0xE8AE74, 0xC57CDA };
-static const uint32_t preset_rgb2_cold[] = { 0x106F4C, 0x1C5165, 0x006565, 0x496074 };
+static const uint32_t preset_rgb1_warm[] = { 0xE8AE74, 0xFC8AEC, 0xF1B77D, 0xFFF279, 0xE0A3F1 };
+static const uint32_t preset_rgb2_cold[] = { 0x106F4C, 0x1C5165, 0x006565, 0x496074, 0xA3AFB9, 0xA2B197 };
 static const uint32_t preset_rgb2_warm[] = { 0xF79036, 0xBD5F00, 0xD58B41, 0xD8C835, 0xE98EA8 };
 static const uint32_t preset_rgb3[] = {
     0x6C6800, 0x6B0400, 0x366C00, 0x006C48, 0x00686C, 0x00326C,
@@ -114,13 +114,13 @@ static uint32_t palette_random_next() {
 static void randomize_custom_palette() {
     palette_random_state ^= (uint32_t)time_us_64() ^ (uint32_t)(time_us_64() >> 32);
     rgb0 = preset_rgb0[palette_random_next() % count_of(preset_rgb0)];
-    // Choose RGB1 uniformly first; RGB2 must come from the same Cold/Warm group.
+    // RGB1/RGB2 are paired crosswise: Cold + Warm or Warm + Cold.
     const uint8_t i1 = palette_random_next() % PRESET_RGB1_COUNT;
     rgb1 = preset_rgb1_at(i1);
     if (i1 < PRESET_RGB1_COLD_COUNT)
-        rgb2 = preset_rgb2_cold[palette_random_next() % count_of(preset_rgb2_cold)];
-    else
         rgb2 = preset_rgb2_warm[palette_random_next() % count_of(preset_rgb2_warm)];
+    else
+        rgb2 = preset_rgb2_cold[palette_random_next() % count_of(preset_rgb2_cold)];
     rgb3 = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
 }
 
