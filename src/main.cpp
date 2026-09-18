@@ -1357,7 +1357,7 @@ const MenuItem menu_items[] = {
                 , "CUSTOM PRESET    "
                 , "CUSTOM RANDOM    "
          }},
-        { "Save for this game", GAME_PALETTE_LINK },
+        { "Save for this game     ", GAME_PALETTE_LINK },
         { "RGB0: %06Xh ", HEX, &rgb0, nullptr, 0xFFFFFF },
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
@@ -1576,7 +1576,7 @@ void menu() {
                     break;
                 case GAME_PALETTE_LINK:
                     if (!rom_size) snprintf(result, TEXTMODE_COLS, "Save for this game [N/A]");
-                    else snprintf(result, TEXTMODE_COLS, "%s", game_palette_linked ? "Unlink game ini file" : "Save for this game");
+                    else snprintf(result, TEXTMODE_COLS, "%s", game_palette_linked ? "Unlink game ini file  " : "Save for this game     ");
                     break;
                 case NONE:
                     color = 6;
