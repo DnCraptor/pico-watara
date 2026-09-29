@@ -171,6 +171,11 @@ static volatile bool ctrlPressed = false;
 static volatile uint8_t fxPressedV = 0;
 static volatile bool pageUpPressed = false;
 static volatile bool pageDownPressed = false;
+static volatile bool palette_random_requested = false;
+static volatile bool palette_random_save_requested = false;
+static volatile bool palette_save_requested = false;
+static volatile bool palette_default_requested = false;
+static volatile bool filebrowser_toggle_requested = false;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -237,6 +242,17 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         else if (isInReport(report, HID_KEY_F7)) fxPressed = 7;
         else if (isInReport(report, HID_KEY_F8)) fxPressed = 8;
         fxPressedV = fxPressed;
+    } else {
+        if (isInReport(report, HID_KEY_F6) && !isInReport(prev_report, HID_KEY_F6))
+            palette_random_requested = true;
+        if (isInReport(report, HID_KEY_F7) && !isInReport(prev_report, HID_KEY_F7))
+            palette_random_save_requested = true;
+        if (isInReport(report, HID_KEY_F8) && !isInReport(prev_report, HID_KEY_F8))
+            palette_save_requested = true;
+        if (isInReport(report, HID_KEY_F9) && !isInReport(prev_report, HID_KEY_F9))
+            palette_default_requested = true;
+        if (isInReport(report, HID_KEY_F10) && !isInReport(prev_report, HID_KEY_F10))
+            filebrowser_toggle_requested = true;
     }
 }
 
@@ -604,6 +620,7 @@ bool isExecutable(const char pathname[255],const char *extensions) {
 }
 
 static bool game_palette_linked = false;
+static uint32_t game_load_generation = 0;
 
 static void game_palette_ini_path(char *path, size_t size) {
     char base[128];
@@ -760,6 +777,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     rom_size = load_size;
     strcpy(filename, fileinfo.fname);
+    ++game_load_generation;
     game_palette_linked = game_palette_exists();
     if (settings.palette == PALETTE_CUSTOM_RANDOM) {
         randomize_custom_palette();
@@ -909,6 +927,11 @@ bool filebrowser(const char pathname[256], const char executables[11]) {
 
         while (true) {
             sleep_ms(100);
+
+            if (filebrowser_toggle_requested) {
+                filebrowser_toggle_requested = false;
+                return false;
+            }
 
             if (!debounce) {
                 debounce = !gamepad1.bits.start;
@@ -1652,6 +1675,31 @@ void menu() {
     save_config();
 }
 
+static void handle_palette_hotkeys() {
+    if (palette_random_requested) {
+        palette_random_requested = false;
+        settings.palette = PALETTE_CUSTOM_RANDOM;
+        randomize_custom_palette();
+        update_palette();
+    }
+    if (palette_random_save_requested) {
+        palette_random_save_requested = false;
+        settings.palette = PALETTE_CUSTOM_RANDOM;
+        randomize_custom_palette();
+        update_palette();
+        save_config();
+    }
+    if (palette_save_requested) {
+        palette_save_requested = false;
+        if (game_palette_write()) game_palette_linked = true;
+    }
+    if (palette_default_requested) {
+        palette_default_requested = false;
+        settings.palette = SV_COLOR_SCHEME_DEFAULT;
+        update_palette();
+    }
+}
+
 /* Renderer loop on Pico's second core */
 void __time_critical_func(render_core)() {
     multicore_lockout_victim_init();
@@ -1743,6 +1791,7 @@ int __time_critical_func(main)() {
 
     bool need_browser = true;
     bool rom_loaded = false;
+    bool direct_browser_loaded_game = false;
     while (true) {
         if (need_browser) {
             i2s_pause(&i2s_config);
@@ -1814,6 +1863,93 @@ int __time_critical_func(main)() {
         }
 
         while (true) {
+            handle_palette_hotkeys();
+
+            if (rom_loaded && filebrowser_toggle_requested) {
+                filebrowser_toggle_requested = false;
+                const uint32_t previous_load_generation = game_load_generation;
+                const bool resume_demo = demo_active;
+                const uint64_t browser_entered_at = time_us_64();
+
+                // The browser is a neutral state.  Do not leave the active Demo
+                // state live while it is allowed to load a manually selected ROM.
+                // If F10 merely closes the browser, restore the saved Demo state
+                // below and compensate its timer for the time spent in the browser.
+                demo_active = false;
+                demo_requested = false;
+
+                i2s_pause(&i2s_config);
+                graphics_set_mode(TEXTMODE_DEFAULT);
+                filebrowser(HOME_DIR, "sv,bin");
+
+                if (demo_requested) {
+                    demo_requested = false;
+                    demo_active = true;
+                    demo_current_name[0] = '\0';
+                    if (demo_load_next_rom(nullptr)) {
+                        direct_browser_loaded_game = true;
+                        clear_video_frame();
+                        break;
+                    }
+                    demo_active = false;
+                }
+
+                if (game_load_generation != previous_load_generation) {
+                    demo_active = false;
+                    demo_requested = false;
+#if VGA || HDMI || SOFTTV
+                    graphics_set_overlay(nullptr, false);
+#endif
+                    demo_advance_pending = false;
+                    demo_game_started_at = 0;
+                    demo_title_drawn = false;
+                    direct_browser_loaded_game = true;
+                    clear_video_frame();
+                    break;
+                }
+
+                // F10 -> F10: no ROM and no new Demo were selected.  Resume the
+                // exact previous game state.  A running Demo is resumed as well,
+                // with its countdown paused for the duration of the file browser.
+                if (resume_demo) {
+                    demo_active = true;
+                    if (demo_game_started_at)
+                        demo_game_started_at += time_us_64() - browser_entered_at;
+                }
+
+#if SOFTTV
+                tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
+                tv_out_mode.color_index = settings.color_mode ? 1.0f : 0.0f;
+#endif
+#if HDMI || SOFTTV
+                if (settings.aspect_ratio == 2) {
+                    graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
+                    graphics_set_offset(0, 0);
+                    graphics_set_mode(GRAPHICSMODE_3X3);
+                } else
+#endif
+                if (settings.aspect_ratio == 1) {
+                    graphics_set_offset(40, 20);
+                    graphics_set_buffer((uint8_t *)SCREEN, 240, 200);
+#if VGA
+                    graphics_set_mode(GRAPHICSMODE_ASPECT);
+#else
+                    graphics_set_mode(GRAPHICSMODE_DEFAULT);
+#endif
+                    uint8_t* screen = (uint8_t*)SCREEN;
+                    for (int i = 0; i < sizeof(bezel); ++i)
+                        screen[i] = bezel[i] + base_bezel;
+                } else {
+                    graphics_set_buffer((uint8_t *)SCREEN, SV_W, SV_H);
+#if VGA
+                    graphics_set_offset(0, 0);
+#else
+                    graphics_set_offset(80, 40);
+#endif
+                    graphics_set_mode(GRAPHICSMODE_DEFAULT);
+                }
+            }
+
             if (rom_loaded && fxPressedV) {
                 // Quick-state takes ownership of the current game. Stop Demo
                 // before either saving or loading so it cannot switch ROMs later.
@@ -1906,6 +2042,13 @@ int __time_critical_func(main)() {
             supervision_reset();
             update_palette();
             rom_loaded = false;
+        }
+
+        if (direct_browser_loaded_game) {
+            direct_browser_loaded_game = false;
+            rom_loaded = true;
+            need_browser = false;
+            continue;
         }
 
         if (demo_requested) {
