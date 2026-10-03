@@ -48,7 +48,7 @@ uint8_t SCREEN[200][240];
 uint8_t TEXT_BUFFER[TEXTMODE_COLS*TEXTMODE_ROWS*2];
 
 SETTINGS settings = {
-    .version = 4,
+    .version = 5,
     .swap_ab = false,
     .aspect_ratio = false,
     .ghosting = 4,
@@ -67,7 +67,8 @@ SETTINGS settings = {
     .preset_rgb0 = 0,
     .preset_rgb1 = 0,
     .preset_rgb2 = 0,
-    .preset_rgb3 = 0
+    .preset_rgb3 = 0,
+    .demo_name = true
 };
 
 uint32_t rgb0;
@@ -226,6 +227,16 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         pageDownPressed = true;
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
+#ifndef PICO_RP2040
+        /* Nothing may touch PSRAM again after QMI is prepared for reset. */
+        save_and_disable_interrupts();
+        watara_psram_prepare_reset();
+        set_sys_clock_khz(150000, false);
+        vreg_set_voltage(VREG_VOLTAGE_1_10);
+        sleep_ms(10);
+#else
+        set_sys_clock_khz(125000, false);
+#endif
         watchdog_enable(10, true);
         while(true) {
             tight_loop_contents();
@@ -558,31 +569,51 @@ static bool demo_title_drawn = false;
 static const uint64_t demo_title_time_us = 10000000ull;
 
 static void demo_draw_title_overlay(void) {
-    const bool visible = demo_active && demo_current_name[0] &&
-                         time_us_64() - demo_game_started_at < demo_title_time_us;
+    static unsigned last_seconds = 0xffffffffu;
+    static bool last_show_title = false;
 
-    if (!visible) {
+    if (!demo_active || !demo_game_started_at) {
         if (demo_title_drawn)
 #if VGA || HDMI || SOFTTV
             graphics_set_overlay(nullptr, false);
 #endif
         demo_title_drawn = false;
+        last_seconds = 0xffffffffu;
+        last_show_title = false;
         return;
     }
 
-    if (!demo_title_drawn) {
-        char title[53];
+    const uint8_t duration_index = settings.demo_duration < count_of(demo_seconds)
+                                 ? settings.demo_duration : 0;
+    const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
+    const uint64_t elapsed_us = time_us_64() - demo_game_started_at;
+    const uint64_t remaining_us = elapsed_us < duration_us ? duration_us - elapsed_us : 0;
+    const unsigned seconds = (unsigned)((remaining_us + 999999ull) / 1000000ull);
+    const bool show_title = settings.demo_name && demo_current_name[0] &&
+                            elapsed_us < demo_title_time_us;
+
+    if (demo_title_drawn && seconds == last_seconds && show_title == last_show_title)
+        return;
+
+    char overlay[53];
+    if (show_title) {
+        char title[45];
         const char *dot = strrchr(demo_current_name, '.');
         size_t len = dot ? (size_t)(dot - demo_current_name) : strlen(demo_current_name);
         if (len > sizeof(title) - 1) len = sizeof(title) - 1;
         for (size_t i = 0; i < len; ++i)
             title[i] = demo_current_name[i] == '_' ? ' ' : demo_current_name[i];
         title[len] = '\0';
-#if VGA || HDMI || SOFTTV
-        graphics_set_overlay(title, true);
-#endif
-        demo_title_drawn = true;
+        snprintf(overlay, sizeof(overlay), "%s  %us", title, seconds);
+    } else {
+        snprintf(overlay, sizeof(overlay), "%us", seconds);
     }
+#if VGA || HDMI || SOFTTV
+    graphics_set_overlay(overlay, true);
+#endif
+    demo_title_drawn = true;
+    last_seconds = seconds;
+    last_show_title = show_title;
 }
 
 
@@ -1266,12 +1297,24 @@ static bool config_read(const char* pathname) {
     const FRESULT fr = f_read(&file, &loaded, sizeof(loaded), &bytes_read);
     f_close(&file);
 
-    if (FR_OK != fr || bytes_read != sizeof(loaded) || loaded.version != 4) {
+    if (FR_OK != fr)
         return false;
+
+    if (bytes_read == sizeof(loaded) && loaded.version == 5) {
+        settings = loaded;
+        return true;
     }
 
-    settings = loaded;
-    return true;
+    if (bytes_read == sizeof(loaded) - sizeof(loaded.demo_name) && loaded.version == 4) {
+        /* v4 is an exact prefix of v5. Keep the old settings and enable the
+         * newly introduced Demo-name OSD by default. */
+        loaded.version = 5;
+        loaded.demo_name = true;
+        settings = loaded;
+        return true;
+    }
+
+    return false;
 }
 
 static bool config_write(const char* pathname) {
@@ -1305,6 +1348,7 @@ void load_config() {
     if (settings.ghosting > 6) settings.ghosting = 4;
     if (settings.tv_system > 1) settings.tv_system = 0;
     if (settings.demo_duration >= count_of(demo_seconds)) settings.demo_duration = 0;
+    settings.demo_name = settings.demo_name ? true : false;
 #if HDMI || SOFTTV
     if (settings.aspect_ratio > 2) settings.aspect_ratio = 0;
 #else
@@ -1399,6 +1443,7 @@ const MenuItem menu_items[] = {
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s", ARRAY, &settings.demo_duration, nullptr, 7, { "15 sec", "30 sec", "45 sec", "1 min ", "2 min ", "3 min ", "5 min ", "10 min" } },
+        { "Demo name OSD: %s", ARRAY, &settings.demo_name, nullptr, 1, { "OFF", "ON " } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },

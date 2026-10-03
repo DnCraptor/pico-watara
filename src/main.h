@@ -45,6 +45,7 @@ typedef struct __attribute__((__packed__)) {
     uint8_t preset_rgb1;
     uint8_t preset_rgb2;
     uint8_t preset_rgb3;
+    bool demo_name;
 } SETTINGS;
 
 extern controller gamepad1;

@@ -13,7 +13,7 @@ if (EXISTS ${picoVscode})
 endif()
 # ====================================================================================
 cmake_minimum_required(VERSION 3.13)
-set(BUILD_VERSION "2.1.9")
+set(BUILD_VERSION "2.2.0")
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards )
 
 #set(PICO_PLATFORM "rp2040" CACHE STRING "Chip type")

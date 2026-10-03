@@ -15,6 +15,7 @@ bool watara_psram_init(void);
 bool watara_psram_available(void);
 size_t watara_psram_size(void);
 void watara_psram_reclock(void);
+void watara_psram_prepare_reset(void);
 
 #ifdef __cplusplus
 }
