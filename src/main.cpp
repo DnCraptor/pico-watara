@@ -29,6 +29,7 @@ extern "C" {
 #include "ps2kbd_mrmltr.h"
 
 #define HOME_DIR "\\WATARA"
+#define SAVE_DIR "/.config/watara"
 extern char __flash_binary_end;
 #define FLASH_TARGET_OFFSET (((((uintptr_t)&__flash_binary_end - XIP_BASE) / FLASH_SECTOR_SIZE) + 4) * FLASH_SECTOR_SIZE)
 static uintptr_t rom = XIP_BASE + FLASH_TARGET_OFFSET;
@@ -177,6 +178,11 @@ static volatile bool palette_random_save_requested = false;
 static volatile bool palette_save_requested = false;
 static volatile bool palette_default_requested = false;
 static volatile bool filebrowser_toggle_requested = false;
+// Written by USB/keyboard (core 1), consumed by the file browser (core 0).
+static volatile bool replay_browser_active = false;
+static volatile uint8_t replay_browser_command = 0;
+enum replay_launch_t : uint8_t { REPLAY_LAUNCH_NORMAL, REPLAY_LAUNCH_RECORD, REPLAY_LAUNCH_PLAY };
+static replay_launch_t replay_launch = REPLAY_LAUNCH_NORMAL;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -185,6 +191,12 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         printf("%2.2X", i);
     printf("\r\n");
      */
+    if (replay_browser_active) {
+        if (isInReport(report, HID_KEY_R) && !isInReport(prev_report, HID_KEY_R))
+            replay_browser_command = 'R';
+        if (isInReport(report, HID_KEY_P) && !isInReport(prev_report, HID_KEY_P))
+            replay_browser_command = 'P';
+    }
     uint8_t h_code = -1;
     if ( isInReport(report, HID_KEY_0) || isInReport(report, HID_KEY_KEYPAD_0)) h_code = 0;
     else if ( isInReport(report, HID_KEY_1) || isInReport(report, HID_KEY_KEYPAD_1)) h_code = 1;
@@ -207,7 +219,7 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     keyboard.bits.select = isInReport(report, HID_KEY_BACKSPACE) || isInReport(report, HID_KEY_ESCAPE) || isInReport(report, HID_KEY_KEYPAD_ADD);
 
     keyboard.bits.a = isInReport(report, HID_KEY_Z) || isInReport(report, HID_KEY_O) || isInReport(report, HID_KEY_KEYPAD_0);
-    keyboard.bits.b = isInReport(report, HID_KEY_X) || isInReport(report, HID_KEY_P) || isInReport(report, HID_KEY_KEYPAD_DECIMAL);
+    keyboard.bits.b = isInReport(report, HID_KEY_X) || (!replay_browser_active && isInReport(report, HID_KEY_P)) || isInReport(report, HID_KEY_KEYPAD_DECIMAL);
 
     bool b7 = isInReport(report, HID_KEY_KEYPAD_7);
     bool b9 = isInReport(report, HID_KEY_KEYPAD_9);
@@ -890,6 +902,9 @@ bool filebrowser(const char pathname[256], const char executables[11]) {
         while (true);
     }
 
+    replay_browser_command = 0;
+    replay_browser_active = true;
+    replay_launch = REPLAY_LAUNCH_NORMAL;
     while (true) {
         memset(fileItems, 0, sizeof(file_item_t) * max_files);
         int total_files = 0;
@@ -959,8 +974,26 @@ bool filebrowser(const char pathname[256], const char executables[11]) {
         while (true) {
             sleep_ms(100);
 
+            const uint8_t replay_command = replay_browser_command;
+            replay_browser_command = 0;
+            if (replay_command && total_files > 0) {
+                const auto item = fileItems[offset + current_item];
+                if (!item.is_directory && item.is_executable) {
+                    // The browser title/paths are displayed using TEXTMODE_COLS,
+                    // but a full ROM path needs the complete 256-byte buffer.
+                    char rom_path[256];
+                    snprintf(rom_path, sizeof(rom_path), "%s\\%s", basepath, item.filename);
+                    if (filebrowser_loadfile(rom_path)) {
+                        replay_launch = replay_command == 'R' ? REPLAY_LAUNCH_RECORD : REPLAY_LAUNCH_PLAY;
+                        replay_browser_active = false;
+                        return true;
+                    }
+                }
+            }
+
             if (filebrowser_toggle_requested) {
                 filebrowser_toggle_requested = false;
+                replay_browser_active = false;
                 return false;
             }
 
@@ -972,11 +1005,13 @@ bool filebrowser(const char pathname[256], const char executables[11]) {
                 demo_debounce = true;
             if (demo_debounce && gamepad1.bits.b) {
                 demo_requested = true;
+                replay_browser_active = false;
                 return false;
             }
 
             // ESCAPE
             if (gamepad1.bits.select) {
+                replay_browser_active = false;
                 return false;
             }
 
@@ -1068,8 +1103,11 @@ bool filebrowser(const char pathname[256], const char executables[11]) {
                 if (file_at_cursor.is_executable) {
                     sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
 
-                    if (filebrowser_loadfile(tmp))
+                    if (filebrowser_loadfile(tmp)) {
+                        replay_launch = REPLAY_LAUNCH_NORMAL;
+                        replay_browser_active = false;
                         return true;
+                    }
                     debounce = false;
                 }
             }
@@ -1193,53 +1231,270 @@ bool __not_in_flash_func(overclock)() {
     return res;
 }
 
+/* Replay records the input delivered to the emulated machine at each
+ * emulated frame.  No per-frame allocations or wall-clock input sampling. */
+static constexpr uint32_t REPLAY_MAGIC = 0x31525657u;       // WVR1
+static constexpr uint32_t REPLAY_STATE_MAGIC = 0x31535657u; // WVS1
+struct __attribute__((packed)) replay_header_t {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t header_size;
+    uint32_t rom_size;
+    uint64_t session_id;
+    uint32_t total_frames;
+    char rom_name[80];
+};
+struct __attribute__((packed)) replay_event_t {
+    uint32_t frame;
+    uint8_t input;
+};
+struct __attribute__((packed)) replay_state_t {
+    uint32_t magic;
+    uint64_t session_id;
+    uint32_t frame;
+    uint32_t file_offset;
+    uint8_t input;
+    uint8_t reserved[3];
+};
+enum replay_mode_t : uint8_t { REPLAY_OFF, REPLAY_RECORD, REPLAY_PLAY };
+static replay_mode_t replay_mode = REPLAY_OFF;
+static FIL replay_file;
+static bool replay_file_open = false;
+static uint64_t replay_session_id = 0;
+static uint32_t replay_frame = 0, replay_total_frames = 0;
+static uint8_t replay_input = 0, replay_last_input = 0xff;
+static replay_event_t replay_next = {};
+static bool replay_next_valid = false;
+static uint32_t replay_osd_second = UINT32_MAX;
+
+static void replay_path(char *out, size_t count) {
+    snprintf(out, count, "/.config/watara/replay/%s.wvr", filename);
+}
+static bool replay_checkpoint() {
+    if (!replay_file_open || replay_mode != REPLAY_RECORD) return false;
+    const FSIZE_t position = f_tell(&replay_file);
+    UINT written = 0;
+    const bool ok = f_lseek(&replay_file, offsetof(replay_header_t, total_frames)) == FR_OK &&
+                    f_write(&replay_file, &replay_frame, sizeof(replay_frame), &written) == FR_OK &&
+                    written == sizeof(replay_frame) &&
+                    f_lseek(&replay_file, position) == FR_OK &&
+                    f_sync(&replay_file) == FR_OK;
+    return ok;
+}
+static void replay_stop() {
+    if (replay_file_open) {
+        if (replay_mode == REPLAY_RECORD) replay_checkpoint();
+        f_close(&replay_file);
+    }
+    replay_file_open = false;
+    replay_mode = REPLAY_OFF;
+    replay_next_valid = false;
+    replay_osd_second = UINT32_MAX;
+    // Demo and REC share the same title overlay, not two overlay layers.
+    if (!demo_active && demo_title_drawn) {
+#if VGA || HDMI || SOFTTV
+        graphics_set_overlay(nullptr, false);
+#endif
+        demo_title_drawn = false;
+    }
+}
+static void replay_read_next() {
+    UINT read = 0;
+    replay_next_valid = replay_file_open && replay_mode == REPLAY_PLAY &&
+        f_read(&replay_file, &replay_next, sizeof(replay_next), &read) == FR_OK &&
+        read == sizeof(replay_next);
+}
+static bool replay_start(bool record) {
+    replay_stop();
+    // The browser already mounted SD.  Never remount while a FIL is open.
+    if (record) {
+        f_mkdir("/.config");
+        f_mkdir("/.config/watara");
+        f_mkdir("/.config/watara/replay");
+    }
+    char path[256]; replay_path(path, sizeof(path));
+    if (f_open(&replay_file, path, record ? FA_CREATE_ALWAYS | FA_WRITE : FA_READ) != FR_OK)
+        return false;
+    replay_file_open = true;
+    replay_header_t header = {};
+    UINT io = 0;
+    if (record) {
+        header.magic = REPLAY_MAGIC;
+        header.version = 1;
+        header.header_size = sizeof(header);
+        header.rom_size = rom_size;
+        header.session_id = time_us_64();
+        strncpy(header.rom_name, filename, sizeof(header.rom_name) - 1);
+        if (f_write(&replay_file, &header, sizeof(header), &io) != FR_OK || io != sizeof(header)) {
+            replay_stop();
+            return false;
+        }
+        replay_mode = REPLAY_RECORD;
+        if (f_sync(&replay_file) != FR_OK) { replay_stop(); return false; }
+    } else {
+        if (f_read(&replay_file, &header, sizeof(header), &io) != FR_OK || io != sizeof(header) ||
+            header.magic != REPLAY_MAGIC || header.version != 1 ||
+            header.header_size != sizeof(header) || header.rom_size != rom_size ||
+            strncmp(header.rom_name, filename, sizeof(header.rom_name)) != 0) {
+            replay_stop();
+            return false;
+        }
+        replay_mode = REPLAY_PLAY;
+    }
+    replay_session_id = header.session_id;
+    replay_frame = 0;
+    replay_total_frames = header.total_frames;
+    replay_input = 0;
+    replay_last_input = 0xff;
+    replay_osd_second = UINT32_MAX;
+    if (!record) replay_read_next();
+    return true;
+}
+static uint8_t replay_begin_frame(uint8_t physical_input) {
+    if (replay_mode == REPLAY_RECORD) {
+        replay_input = physical_input;
+        if (replay_input != replay_last_input) {
+            const replay_event_t event = { replay_frame, replay_input };
+            UINT written = 0;
+            if (f_write(&replay_file, &event, sizeof(event), &written) != FR_OK ||
+                written != sizeof(event)) {
+                replay_stop();
+                return physical_input;
+            }
+            replay_last_input = replay_input;
+        }
+    } else if (replay_mode == REPLAY_PLAY) {
+        if (replay_frame >= replay_total_frames) {
+            replay_stop();
+            return physical_input;
+        }
+        while (replay_next_valid && replay_next.frame == replay_frame) {
+            replay_input = replay_next.input;
+            replay_read_next();
+        }
+        if (replay_next_valid && replay_next.frame < replay_frame) {
+            replay_stop();
+            return physical_input;
+        }
+    } else return physical_input;
+    return replay_input;
+}
+static void replay_end_frame() {
+    if (replay_mode == REPLAY_OFF) return;
+    ++replay_frame;
+    if (replay_mode == REPLAY_RECORD && replay_frame % 60u == 0u && !replay_checkpoint())
+        replay_stop();
+}
+static replay_state_t replay_make_state() {
+    replay_state_t state = {};
+    if (replay_mode == REPLAY_RECORD && replay_file_open) {
+        // Checkpoint/sync before opening the save-state file.
+        if (!replay_checkpoint()) { replay_stop(); return state; }
+        const FSIZE_t pos = f_tell(&replay_file);
+        if (pos > UINT32_MAX) { replay_stop(); return state; }
+        state.magic = REPLAY_STATE_MAGIC;
+        state.session_id = replay_session_id;
+        state.frame = replay_frame;
+        state.file_offset = (uint32_t)pos;
+        state.input = replay_input;
+    }
+    return state;
+}
+static void replay_restore_state(const replay_state_t &state) {
+    if (replay_mode != REPLAY_RECORD || !replay_file_open) return;
+    if (state.magic != REPLAY_STATE_MAGIC || state.session_id != replay_session_id ||
+        state.file_offset < sizeof(replay_header_t) ||
+        state.file_offset > f_size(&replay_file) ||
+        f_lseek(&replay_file, state.file_offset) != FR_OK ||
+        f_truncate(&replay_file) != FR_OK) {
+        replay_stop();
+        return;
+    }
+    replay_frame = state.frame;
+    replay_input = state.input;
+    replay_last_input = 0xff; // Force a new first event on the replacement branch.
+    replay_osd_second = UINT32_MAX;
+    if (!replay_checkpoint()) replay_stop();
+}
+static void replay_draw_record_overlay() {
+    const uint32_t seconds = replay_frame / 60u;
+    if (seconds == replay_osd_second && demo_title_drawn) return;
+    replay_osd_second = seconds;
+    char title[53];
+    snprintf(title, sizeof(title), "REC %02lu:%02lu:%02lu",
+             (unsigned long)(seconds / 3600u),
+             (unsigned long)((seconds / 60u) % 60u),
+             (unsigned long)(seconds % 60u));
+#if VGA || HDMI || SOFTTV
+    graphics_set_overlay(title, true);
+#endif
+    demo_title_drawn = true;
+}
+
 bool save() {
     char pathname[255];
     const size_t size = supervision_save_state_buf_size();
-    auto * data = (uint8_t *)(malloc(size));
+    auto *data = (uint8_t *)malloc(size);
+    if (!data) return false;
 
-    if (settings.save_slot > 0) {
-        sprintf(pathname, "%s\\%s_%d.save",  HOME_DIR, filename, settings.save_slot);
-    }
-    else {
-        sprintf(pathname, "%s\\%s.save",  HOME_DIR, filename);
-    }
+    if (settings.save_slot > 0)
+        snprintf(pathname, sizeof(pathname), "%s/%s_%d.save", SAVE_DIR, filename, settings.save_slot);
+    else
+        snprintf(pathname, sizeof(pathname), "%s/%s.save", SAVE_DIR, filename);
 
-    FRESULT fr = f_mount(&fs, "", 1);
+    // Make sure the save directory exists; HOME_DIR contains ROMs only.
+    f_mkdir("/.config");
+    f_mkdir(SAVE_DIR);
+
+    // Flush the movie BEFORE opening the state file; never remount FatFs.
+    const replay_state_t replay_state = replay_make_state();
     FIL fd;
-    fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
-    UINT bytes_writen;
-
-    supervision_save_state_buf((uint8*)data, (uint32)size);
-    f_write(&fd, data, size, &bytes_writen);
-    f_close(&fd);
+    if (f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+        free(data);
+        return false;
+    }
+    supervision_save_state_buf((uint8 *)data, (uint32)size);
+    UINT written = 0;
+    const bool state_ok = f_write(&fd, data, size, &written) == FR_OK && written == size;
+    const bool replay_ok = state_ok &&
+        f_write(&fd, &replay_state, sizeof(replay_state), &written) == FR_OK &&
+        written == sizeof(replay_state);
+    const bool ok = state_ok && replay_ok;
+    const FRESULT close_result = f_close(&fd);
     free(data);
-    return true;
+    return ok && close_result == FR_OK;
 }
 
 bool load() {
     char pathname[255];
     const size_t size = supervision_save_state_buf_size();
-    auto * data = (uint8_t *)(malloc(size));
+    auto *data = (uint8_t *)malloc(size);
+    if (!data) return false;
 
-    if (settings.save_slot > 0) {
-        sprintf(pathname, "%s\\%s_%d.save",  HOME_DIR, filename, settings.save_slot);
-    }
-    else {
-        sprintf(pathname, "%s\\%s.save",  HOME_DIR, filename);
-    }
+    if (settings.save_slot > 0)
+        snprintf(pathname, sizeof(pathname), "%s/%s_%d.save", SAVE_DIR, filename, settings.save_slot);
+    else
+        snprintf(pathname, sizeof(pathname), "%s/%s.save", SAVE_DIR, filename);
 
-    FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
-    fr = f_open(&fd, pathname, FA_READ);
-    UINT bytes_read;
-
-    f_read(&fd, data, size, &bytes_read);
-    supervision_load_state_buf((uint8*)data, (uint32)size);
+    if (f_open(&fd, pathname, FA_READ) != FR_OK) {
+        free(data);
+        return false;
+    }
+    UINT read = 0;
+    const bool ok = f_read(&fd, data, size, &read) == FR_OK && read == size;
+    replay_state_t replay_state = {};
+    const bool replay_state_valid = ok &&
+        f_read(&fd, &replay_state, sizeof(replay_state), &read) == FR_OK &&
+        read == sizeof(replay_state);
     f_close(&fd);
-
+    if (ok) {
+        supervision_load_state_buf((uint8 *)data, (uint32)size);
+        if (replay_state_valid) replay_restore_state(replay_state);
+        else if (replay_mode == REPLAY_RECORD) replay_stop();
+    }
     free(data);
-    return true;
+    return ok;
 }
 
 static const char* config_platform_name() {
@@ -1375,7 +1630,7 @@ void load_config() {
 void save_config() {
     char pathname[256];
 
-    if (FR_OK == f_mount(&fs, "", 1)) {
+    if (fs.fs_type != 0 || FR_OK == f_mount(&fs, "", 1)) {
         config_mkdirs();
         config_path(pathname, sizeof(pathname));
         config_write(pathname);
@@ -1780,7 +2035,7 @@ void __time_critical_func(render_core)() {
 #endif
             ps2kbd.tick();
             gamepad1_update();
-            supervision_set_input(gamepad1.state);
+            // Core 0 latches the effective (physical or replay) input each frame.
 
             last_frame_tick = tick;
         }
@@ -1870,6 +2125,10 @@ int __time_critical_func(main)() {
             if (supervision_load((uint8_t *)rom, rom_size) ) {
                 update_palette();
             }
+            if (replay_launch == REPLAY_LAUNCH_RECORD) replay_start(true);
+            else if (replay_launch == REPLAY_LAUNCH_PLAY) replay_start(false);
+            else replay_stop();
+            replay_launch = REPLAY_LAUNCH_NORMAL;
 
 #if SOFTTV
         tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
@@ -1923,6 +2182,7 @@ int __time_critical_func(main)() {
                 demo_active = false;
                 demo_requested = false;
 
+                replay_stop(); // Browser remounts the SD card.
                 i2s_pause(&i2s_config);
                 graphics_set_mode(TEXTMODE_DEFAULT);
                 filebrowser(HOME_DIR, "sv,bin");
@@ -1995,30 +2255,34 @@ int __time_critical_func(main)() {
                 }
             }
 
-            if (rom_loaded && fxPressedV) {
-                // Quick-state takes ownership of the current game. Stop Demo
-                // before either saving or loading so it cannot switch ROMs later.
-                demo_active = false;
-                demo_requested = false;
-                demo_advance_pending = false;
-                demo_game_started_at = 0;
-                demo_title_drawn = false;
-                if (altPressed) {
-                    settings.save_slot = fxPressedV;
-                    load();
-                } else if (ctrlPressed) {
-                    settings.save_slot = fxPressedV;
-                    save();
+            static uint8_t last_quick_slot = 0;
+            const uint8_t quick_slot = fxPressedV;
+            if (!quick_slot) last_quick_slot = 0;
+            else if (rom_loaded && quick_slot != last_quick_slot) {
+                last_quick_slot = quick_slot;
+                if (demo_active) {
+                    demo_active = false;
+                    demo_requested = false;
+                    demo_advance_pending = false;
+                    demo_game_started_at = 0;
+                    demo_title_drawn = false;
                 }
+                settings.save_slot = quick_slot;
+                if (altPressed) load();
+                else if (ctrlPressed) save();
             }
             if (rom_loaded) {
+                const uint8_t live_input = gamepad1.state;
+                supervision_set_input(replay_begin_frame(live_input));
                 if (settings.aspect_ratio == 1) {
                     uint32_t sw_w = 240;
                     supervision_exec_ex((uint8_t *) SCREEN + sw_w * 20 + 40, sw_w, 0, settings.ghosting);
                 } else {
                     supervision_exec_ex((uint8_t *) SCREEN, SV_W, 0, settings.ghosting);
                 }
-                demo_draw_title_overlay();
+                replay_end_frame();
+                if (replay_mode == REPLAY_RECORD) replay_draw_record_overlay();
+                else demo_draw_title_overlay();
             }
             // for(int x = 0; x <64; x++) graphics_set_palette(x, RGB888(bitmap.pal.color[x][0], bitmap.pal.color[x][1], bitmap.pal.color[x][2]));
 
@@ -2083,6 +2347,7 @@ int __time_critical_func(main)() {
         }
 
         i2s_pause(&i2s_config);
+        replay_stop();
         if (rom_loaded) {
             supervision_reset();
             update_palette();
