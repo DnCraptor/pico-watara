@@ -1,3 +1,15 @@
+# v2.2.1
+
+- Added per-ROM input recording (`R`) and replay playback (`P`) from the file browser, without changing the existing Demo shortcut or in-game `P` mapping.
+- Added deterministic input-event playback indexed by emulated frame; live gameplay input is ignored during playback and restored when it finishes.
+- Added `.wvr` replay files under `/.config/watara/replay/`, with ROM identity checks and periodic header updates and synchronization every 60 emulated frames.
+- Added the `REC HH:MM:SS` indicator to the existing title OSD during recording, without adding a playback overlay.
+- Extended save states with replay-session timeline metadata; loading a matching quick-save restores the recording position and truncates the abandoned recording branch.
+- Moved save-state files from `/WATARA/` to `/.config/watara/`; previous `.save` files must be moved manually if they are still needed.
+- Removed repeated FatFs remounts during quick-save, quick-load and configuration saving to avoid invalidating an open recording.
+- Added allocation, file-open and complete read/write checks to save-state operations.
+- Updated the README and release notes for version 2.1.9, the current save-data paths and replay controls.
+
 # v2.1.6
 
 - Added RP2040 and RP2350 release matrix support for VGA, HDMI and TV-SOFT.

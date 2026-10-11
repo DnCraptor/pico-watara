@@ -37,7 +37,17 @@ ROM files are loaded from:
 
 Supported ROM extensions are `.sv` and `.bin`.
 
-Save states are stored next to the ROMs in `/WATARA` using `.save` files.
+Save states and input recordings are persistent emulator data stored separately from ROMs:
+
+```text
+/.config/watara/             Save states (.save)
+/.config/watara/replay/      Input recordings (.wvr)
+```
+
+A save state uses the original ROM filename (including `.sv` or `.bin`):
+`<rom-filename>.save` for slot 0, or `<rom-filename>_<slot>.save` for numbered slots.
+A recording is named `<rom-filename>.wvr`. Starting a new recording for the
+same ROM replaces its existing `.wvr` file.
 
 Per-platform/per-video emulator settings are stored in:
 
@@ -106,17 +116,69 @@ It can be started either from the file browser with `B` or from the emulator men
 
 The active cartridge name is shown along the bottom of the output while Demo mode is running. If a cartridge cannot be loaded, Demo mode briefly shows the load error, skips that cartridge and continues with the next one. Entering the file browser clears the active Demo state so Demo cannot remain latched after an unrelated exit from emulation.
 
-## File browser navigation
+## File browser controls
 
-In addition to the existing directional controls, USB keyboards can use `PageUp` and `PageDown` to move the selection by half a visible page. The viewport scrolls only when the new selection would move outside the currently visible list.
+Select a `.sv` or `.bin` cartridge and use:
 
-## Save states
+- `Start` / `Enter`: run the selected ROM normally.
+- `R`: run the selected ROM and start a new input recording (overwrites its existing `.wvr`).
+- `P`: run the selected ROM and play back its saved `.wvr` recording.
+- `B`: start Demo mode (unchanged).
+- `PageUp` / `PageDown` on a keyboard: move the selection by half a visible page.
+- `F10`: toggle the file browser while a game is running.
 
-The emulator supports multiple save-state slots from the menu. Save-state files remain persistent user data under `/WATARA`.
+The viewport scrolls only when the new selection would move outside the currently visible list. `P` continues to act as the in-game `B` key **outside** the file browser.
+
+## Input recording and playback
+
+Recording stores **input changes indexed by emulated frame**, not timestamps from the
+wall clock. Input from the keyboard and controller is combined before it is sent
+to the Supervision core. During playback, recorded input drives the emulated game;
+live game-button input does not replace it. At the end of the recorded frames,
+normal live input resumes.
+
+Recording displays `REC HH:MM:SS` in the existing title-overlay area, updated
+from emulated frame count (60 frames per displayed second). There is no `PLAY`
+overlay. Demo mode retains its original cartridge-name display.
+
+The recording is periodically synchronized to the SD card every 60 emulated
+frames and when recording ends. A watchdog reset can therefore lose the most
+recent, not-yet-synchronized portion. A recording belongs to a specific ROM
+filename and size; playback checks both against the recording header.
+
+## Save states and replay timeline
+
+The emulator supports numbered save-state slots in the menu and keyboard quick
+save/load shortcuts:
+
+- `Ctrl+F1` through `Ctrl+F8`: save to the corresponding slot.
+- `Alt+F1` through `Alt+F8`: load the corresponding slot.
+
+Files are read and written in `/.config/watara/`, not `/WATARA/`. The directory
+is created when necessary. Existing `.save` files previously written to
+`/WATARA/` must be moved manually if they are still needed.
+
+While recording, a save state also contains the recording session ID, emulated
+frame and `.wvr` file position. Loading a state **from the same recording
+session** restores that position, truncates input events from the abandoned
+future and continues recording a new branch. Loading a state without compatible
+recording metadata does not preserve the current recording timeline. The normal
+Supervision state remains the first part of the `.save` file, with replay
+metadata appended afterward.
+
+Quick save/load does not remount FatFs while a recording file is open. Entering
+the file browser ends the current recording or playback session; leaving Demo
+mode via quick save/load continues to clear Demo state.
 
 ## Configuration format
 
-The current settings format is version 3. Version 3 stores Demo duration and the TV-SOFT `Colors` option in addition to the previously persistent settings. Configuration reads are strict: older settings structures are not accepted as the current format. Configuration writes are considered successful only if the complete settings block is written and the file closes successfully.
+The current settings format is **version 4**. It includes Demo duration,
+TV-SOFT `Colors`, and custom-palette preset indices alongside the other
+settings. Configuration reads are strict: settings files with an older version
+or an unexpected size are not accepted. Configuration writes are considered
+successful only if the complete settings block is written and the file closes
+successfully. Saving configuration does not remount an already mounted SD
+volume, so an open replay file is not invalidated.
 
 ## Clocking
 
@@ -173,10 +235,10 @@ Audio suffix:
 Example names:
 
 ```text
-m1p1-watara-VGA-PWM-2.1.7.uf2
-z0p1-watara-TV-SOFT-I2S-2.1.7.uf2
-m2p2-watara-HDMI-I2S-2.1.7.uf2
-PCp2-watara-VGA-PWM-2.1.7.uf2
+m1p1-watara-VGA-PWM-2.2.1.uf2
+z0p1-watara-TV-SOFT-I2S-2.2.1.uf2
+m2p2-watara-HDMI-I2S-2.2.1.uf2
+PCp2-watara-VGA-PWM-2.2.1.uf2
 ```
 
 ## Credits
