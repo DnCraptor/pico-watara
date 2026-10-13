@@ -72,9 +72,9 @@ pico_board_cmake_set(PICO_PLATFORM, rp2350)
 #define PICO_FLASH_SPI_CLKDIV 2
 #endif
 
-pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (4 * 1024 * 1024))
+pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (16 * 1024 * 1024))
 #ifndef PICO_FLASH_SIZE_BYTES
-#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)
+#define PICO_FLASH_SIZE_BYTES (16 * 1024 * 1024)
 #endif
 
 pico_board_cmake_set_default(PICO_RP2350_A2_SUPPORTED, 1)
@@ -91,13 +91,13 @@ pico_board_cmake_set_default(PICO_RP2350_A2_SUPPORTED, 1)
 #define SDCARD_PIN_SPI0_MISO 40
 #define SDCARD_PIN_SPI0_CS 43
 
-// PS2KBD
-#define PS2KBD_GPIO_FIRST 0
+// PS2KBD: CLK GP2, DATA GP3 (ps2kbd_mrmltr2.pio), as in MOS2 and pico-nes for z0p2
+#define PS2KBD_GPIO_FIRST 2
 
-// NES Gamepad
-#define NES_GPIO_CLK 7
-#define NES_GPIO_LAT 8
-#define NES_GPIO_DATA 9
+// NES Gamepad: CLK GP4, LATCH GP5, DATA GP7, as in MOS2 for z0p2
+#define NES_GPIO_CLK 4
+#define NES_GPIO_LAT 5
+#define NES_GPIO_DATA 7
 
 // HDMI 8 pins starts from pin:
 #define HDMI_BASE_PIN 32

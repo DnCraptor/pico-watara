@@ -717,6 +717,31 @@ static bool game_palette_unlink() {
     FRESULT fr=f_unlink(path); return fr==FR_OK || fr==FR_NO_FILE;
 }
 
+#if PICO_RP2350
+/* flash_range_erase/program end with the boot-time XIP setup (QSPI clock =
+ * clk_sys / PICO_FLASH_SPI_CLKDIV = clk_sys / 2) and flush the XIP cache, so
+ * the first fetch back in flash code would run the flash at 189 MHz at the
+ * default 378 MHz: too fast for the z0p2 flash, the board hangs while loading
+ * a ROM without PSRAM. Run the write and the restore of the QMI timing set by
+ * overclock() from RAM. */
+static void __no_inline_not_in_flash_func(flash_write_sector_keep_qmi)(uint32_t offs, const uint8_t *data) {
+    const uint32_t timing = qmi_hw->m[0].timing;
+    const uint32_t rfmt   = qmi_hw->m[0].rfmt;
+    const uint32_t rcmd   = qmi_hw->m[0].rcmd;
+    flash_range_erase(offs, FLASH_SECTOR_SIZE);
+    flash_range_program(offs, data, FLASH_SECTOR_SIZE);
+    qmi_hw->m[0].timing = timing;
+    qmi_hw->m[0].rfmt   = rfmt;
+    qmi_hw->m[0].rcmd   = rcmd;
+    __asm volatile ("dsb; isb" ::: "memory");
+}
+#else
+static void flash_write_sector_keep_qmi(uint32_t offs, const uint8_t *data) {
+    flash_range_erase(offs, FLASH_SECTOR_SIZE);
+    flash_range_program(offs, data, FLASH_SECTOR_SIZE);
+}
+#endif
+
 bool filebrowser_loadfile(const char pathname[256]) {
     UINT bytes_read = 0;
     FIL file;
@@ -785,8 +810,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
                         (const uint8_t *)(XIP_BASE + flash_target_offset);
                     if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
                         const uint32_t ints = save_and_disable_interrupts();
-                        flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-                        flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+                        flash_write_sector_keep_qmi(flash_target_offset, buffer);
                         restore_interrupts(ints);
 
                         if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
